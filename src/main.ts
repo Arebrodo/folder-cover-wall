@@ -997,7 +997,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
           this.plugin.refreshOpenViews();
         }));
 
-    containerEl.createEl('h3', { text: 'Performance' });
+    new Setting(containerEl).setName('Performance').setHeading();
 
     new Setting(containerEl)
       .setName('Maximum cover resolution')
