@@ -14,6 +14,9 @@ Please keep changes focused and avoid relying on undocumented Obsidian DOM inter
 
 ## Bug reports
 
+Please open issues at https://github.com/Arebrodo/folder-cover-wall/issues.
+
+
 Please include:
 
 - Obsidian version.

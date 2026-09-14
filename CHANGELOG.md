@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+- Fixed Community Directory automated review blockers.
+- Removed `Obsidian` from the manifest description.
+- Renamed the plugin-owned `settings` field to `pluginSettings` to avoid colliding with the newer core `Plugin.settings` API.
+- Stopped detaching custom view leaves during plugin unload so the user's workspace location is preserved.
+- Replaced the deprecated `builtin-modules` development dependency with Node's `builtinModules`.
+
+Maintained by [Arebrodo](https://github.com/Arebrodo).
+
 All notable changes to Folder Cover Wall are documented here.
 
 ## 0.4.0 - 2026-09-14

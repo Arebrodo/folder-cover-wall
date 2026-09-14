@@ -1,5 +1,7 @@
 # Folder Cover Wall
 
+作者：[Arebrodo](https://github.com/Arebrodo) · [English README](./README.md)
+
 Folder Cover Wall 是一个 Obsidian 文件夹可视化插件：它把左侧栏中的文件夹显示成大封面卡片，而不是只显示传统树状文件列表。
 
 ![Folder Cover Wall 截图](./assets/screenshot.png)
@@ -46,6 +48,12 @@ styles.css
 - 清除自定义封面。
 
 外部图片会以嵌入数据保存在插件自己的 `data.json` 中，不会上传到网络。原始图片移动或改名后，封面仍可继续使用。
+
+## 项目地址
+
+GitHub：https://github.com/Arebrodo/folder-cover-wall
+
+问题反馈：https://github.com/Arebrodo/folder-cover-wall/issues
 
 ## 开发与发布
 

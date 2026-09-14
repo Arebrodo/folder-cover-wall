@@ -1,7 +1,7 @@
 {
   "name": "folder-cover-wall",
-  "version": "0.4.0",
-  "description": "Browse Obsidian folders as a visual cover wall in the sidebar.",
+  "version": "0.4.1",
+  "description": "Browse folders as a visual cover wall in the sidebar.",
   "main": "main.js",
   "type": "module",
   "scripts": {
@@ -17,11 +17,18 @@
     "gallery",
     "cover-wall"
   ],
-  "author": "YOUR_NAME",
+  "author": "Arebrodo",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Arebrodo/folder-cover-wall.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Arebrodo/folder-cover-wall/issues"
+  },
+  "homepage": "https://github.com/Arebrodo/folder-cover-wall#readme",
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "builtin-modules": "^3.3.0",
     "esbuild": "^0.25.0",
     "obsidian": "latest",
     "tslib": "^2.8.1",

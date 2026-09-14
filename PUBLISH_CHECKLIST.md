@@ -2,10 +2,10 @@
 
 Before submitting Folder Cover Wall to the Obsidian Community directory:
 
-- [ ] Replace `YOUR_NAME` in `manifest.json`.
-- [ ] Replace `YOUR_NAME` in `package.json`.
-- [ ] Decide whether to keep the MIT license and contributor-style copyright line.
-- [ ] Confirm `folder-cover-wall` is still available as a unique plugin ID.
+- [x] Set `manifest.json` author to `Arebrodo`.
+- [x] Set `package.json` author and repository metadata to `Arebrodo`.
+- [x] Use the MIT license with copyright holder `Arebrodo`.
+- [ ] Confirm `folder-cover-wall` is still available as a unique plugin ID immediately before submission.
 - [ ] Test the plugin on a clean vault with the default theme.
 - [ ] Test at least one additional popular theme.
 - [ ] Test folder navigation, note opening, vault covers, external covers, and cover clearing.
@@ -20,3 +20,7 @@ Before submitting Folder Cover Wall to the Obsidian Community directory:
 - [ ] Create a GitHub Release tag that exactly matches the manifest version, without a `v` prefix.
 - [ ] Confirm the GitHub Release includes `main.js`, `manifest.json`, and `styles.css` as assets.
 - [ ] Submit the public repository through the Obsidian Community directory.
+
+## Configured repository
+
+`https://github.com/Arebrodo/folder-cover-wall`

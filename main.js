@@ -67,7 +67,7 @@ class FolderCoverWallView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
-    this.currentPath = plugin.settings.rootPath || '';
+    this.currentPath = plugin.pluginSettings.rootPath || '';
     this.boundRefresh = () => this.refresh();
   }
 
@@ -103,7 +103,7 @@ class FolderCoverWallView extends ItemView {
   }
 
   rootFolder() {
-    return this.resolveFolder(this.plugin.settings.rootPath) || this.app.vault.getRoot();
+    return this.resolveFolder(this.plugin.pluginSettings.rootPath) || this.app.vault.getRoot();
   }
 
   ensurePathInsideRoot(path) {
@@ -130,7 +130,7 @@ class FolderCoverWallView extends ItemView {
   }
 
   async findCoverSource(folder) {
-    const custom = this.plugin.settings.customCovers[folder.path];
+    const custom = this.plugin.pluginSettings.customCovers[folder.path];
 
     // Backward compatibility with v0.1-v0.3, where a custom cover was stored
     // as a plain vault-relative path string.
@@ -155,7 +155,7 @@ class FolderCoverWallView extends ItemView {
       }
     }
 
-    const names = this.plugin.settings.coverFileNames
+    const names = this.plugin.pluginSettings.coverFileNames
       .split(',')
       .map((x) => x.trim())
       .filter(Boolean);
@@ -167,7 +167,7 @@ class FolderCoverWallView extends ItemView {
       }
     }
 
-    if (this.plugin.settings.autoUseFirstImage) {
+    if (this.plugin.pluginSettings.autoUseFirstImage) {
       const firstImage = folder.children
         .filter(isImageFile)
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))[0];
@@ -209,7 +209,7 @@ class FolderCoverWallView extends ItemView {
         }
 
         const dataUrl = await this.readExternalImageAsDataUrl(file);
-        this.plugin.settings.customCovers[folder.path] = {
+        this.plugin.pluginSettings.customCovers[folder.path] = {
           type: 'external',
           name: file.name,
           mime: file.type || 'image/*',
@@ -303,7 +303,7 @@ class FolderCoverWallView extends ItemView {
   }
 
   createFileSection(container, files) {
-    if (!this.plugin.settings.showFiles || !files.length) return;
+    if (!this.plugin.pluginSettings.showFiles || !files.length) return;
 
     const section = container.createDiv({ cls: 'fcw-files-section' });
     const heading = section.createDiv({ cls: 'fcw-section-heading' });
@@ -348,8 +348,8 @@ class FolderCoverWallView extends ItemView {
       },
     });
 
-    card.style.setProperty('--fcw-card-min-width', `${this.plugin.settings.cardMinWidth}px`);
-    card.style.setProperty('--fcw-aspect-ratio', this.plugin.settings.cardAspectRatio);
+    card.style.setProperty('--fcw-card-min-width', `${this.plugin.pluginSettings.cardMinWidth}px`);
+    card.style.setProperty('--fcw-aspect-ratio', this.plugin.pluginSettings.cardAspectRatio);
     card.style.setProperty('--fcw-folder-hue', `${stableHue(folder.path || folder.name)}`);
 
     const coverWrap = card.createDiv({ cls: 'fcw-cover' });
@@ -377,8 +377,8 @@ class FolderCoverWallView extends ItemView {
 
     const counts = this.countFolder(folder);
     const metaParts = [];
-    if (this.plugin.settings.showChildCount) metaParts.push(`${counts.folders} folders`);
-    if (this.plugin.settings.showFileCount) metaParts.push(`${counts.files} files`);
+    if (this.plugin.pluginSettings.showChildCount) metaParts.push(`${counts.folders} folders`);
+    if (this.plugin.pluginSettings.showFileCount) metaParts.push(`${counts.files} files`);
     if (metaParts.length) overlay.createDiv({ cls: 'fcw-card-meta', text: metaParts.join(' · ') });
 
     const open = async () => this.navigate(folder.path);
@@ -403,7 +403,7 @@ class FolderCoverWallView extends ItemView {
     menu.addItem((item) => {
       item.setTitle('Choose cover from vault…').setIcon('image').onClick(() => {
         new ImageFileSuggestModal(this.app, async (file) => {
-          this.plugin.settings.customCovers[folder.path] = { type: 'vault', path: file.path };
+          this.plugin.pluginSettings.customCovers[folder.path] = { type: 'vault', path: file.path };
           await this.plugin.saveSettings();
           await this.refresh();
           new Notice(`Vault cover set for ${folder.name}`);
@@ -417,10 +417,10 @@ class FolderCoverWallView extends ItemView {
       });
     });
 
-    if (this.plugin.settings.customCovers[folder.path]) {
+    if (this.plugin.pluginSettings.customCovers[folder.path]) {
       menu.addItem((item) => {
         item.setTitle('Clear custom cover').setIcon('x').onClick(async () => {
-          delete this.plugin.settings.customCovers[folder.path];
+          delete this.plugin.pluginSettings.customCovers[folder.path];
           await this.plugin.saveSettings();
           await this.refresh();
         });
@@ -455,7 +455,7 @@ class FolderCoverWallView extends ItemView {
       .filter((child) => child instanceof TFile)
       .filter((file) => {
         const lower = file.name.toLowerCase();
-        const coverNames = this.plugin.settings.coverFileNames
+        const coverNames = this.plugin.pluginSettings.coverFileNames
           .split(',')
           .map((x) => x.trim().toLowerCase())
           .filter(Boolean);
@@ -470,7 +470,7 @@ class FolderCoverWallView extends ItemView {
 
     if (folderChildren.length) {
       const grid = shell.createDiv({ cls: 'fcw-grid' });
-      grid.style.setProperty('--fcw-card-min-width', `${this.plugin.settings.cardMinWidth}px`);
+      grid.style.setProperty('--fcw-card-min-width', `${this.plugin.pluginSettings.cardMinWidth}px`);
       for (const child of folderChildren) {
         await this.createFolderCard(grid, child);
       }
@@ -478,7 +478,7 @@ class FolderCoverWallView extends ItemView {
 
     this.createFileSection(shell, files);
 
-    if (folderChildren.length === 0 && (!this.plugin.settings.showFiles || files.length === 0)) {
+    if (folderChildren.length === 0 && (!this.plugin.pluginSettings.showFiles || files.length === 0)) {
       const empty = shell.createDiv({ cls: 'fcw-empty' });
       const icon = empty.createDiv({ cls: 'fcw-empty-icon' });
       setIcon(icon, 'folder-open');
@@ -504,9 +504,9 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
       .setDesc('Leave empty to show the whole vault. Example: Projects/Research')
       .addText((text) => text
         .setPlaceholder('')
-        .setValue(this.plugin.settings.rootPath)
+        .setValue(this.plugin.pluginSettings.rootPath)
         .onChange(async (value) => {
-          this.plugin.settings.rootPath = normalizePath(value.trim());
+          this.plugin.pluginSettings.rootPath = normalizePath(value.trim());
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         }));
@@ -515,9 +515,9 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
       .setName('Replace left pane automatically')
       .setDesc('When Obsidian finishes loading, show Folder Cover Wall in the current left sidebar leaf.')
       .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.autoReplaceLeftPane)
+        .setValue(this.plugin.pluginSettings.autoReplaceLeftPane)
         .onChange(async (value) => {
-          this.plugin.settings.autoReplaceLeftPane = value;
+          this.plugin.pluginSettings.autoReplaceLeftPane = value;
           await this.plugin.saveSettings();
         }));
 
@@ -527,9 +527,9 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
       .addSlider((slider) => slider
         .setLimits(120, 360, 10)
         .setDynamicTooltip()
-        .setValue(this.plugin.settings.cardMinWidth)
+        .setValue(this.plugin.pluginSettings.cardMinWidth)
         .onChange(async (value) => {
-          this.plugin.settings.cardMinWidth = value;
+          this.plugin.pluginSettings.cardMinWidth = value;
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         }));
@@ -538,9 +538,9 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
       .setName('Card aspect ratio')
       .setDesc('Examples: 16 / 9, 4 / 3, 1 / 1, 3 / 4')
       .addText((text) => text
-        .setValue(this.plugin.settings.cardAspectRatio)
+        .setValue(this.plugin.pluginSettings.cardAspectRatio)
         .onChange(async (value) => {
-          this.plugin.settings.cardAspectRatio = value.trim() || '16 / 9';
+          this.plugin.pluginSettings.cardAspectRatio = value.trim() || '16 / 9';
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         }));
@@ -549,9 +549,9 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
       .setName('Automatically use first image in folder')
       .setDesc('If no custom cover or cover.jpg/png exists, use the first image directly inside that folder before falling back to a generated cover.')
       .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.autoUseFirstImage)
+        .setValue(this.plugin.pluginSettings.autoUseFirstImage)
         .onChange(async (value) => {
-          this.plugin.settings.autoUseFirstImage = value;
+          this.plugin.pluginSettings.autoUseFirstImage = value;
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         }));
@@ -559,9 +559,9 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Show child-folder count')
       .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.showChildCount)
+        .setValue(this.plugin.pluginSettings.showChildCount)
         .onChange(async (value) => {
-          this.plugin.settings.showChildCount = value;
+          this.plugin.pluginSettings.showChildCount = value;
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         }));
@@ -569,9 +569,9 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Show file count')
       .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.showFileCount)
+        .setValue(this.plugin.pluginSettings.showFileCount)
         .onChange(async (value) => {
-          this.plugin.settings.showFileCount = value;
+          this.plugin.pluginSettings.showFileCount = value;
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         }));
@@ -580,9 +580,9 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
       .setName('Show notes and files')
       .setDesc('Show the files inside the current folder below the folder cover wall. Markdown notes appear first.')
       .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.showFiles)
+        .setValue(this.plugin.pluginSettings.showFiles)
         .onChange(async (value) => {
-          this.plugin.settings.showFiles = value;
+          this.plugin.pluginSettings.showFiles = value;
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         }));
@@ -591,9 +591,9 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
       .setName('Automatic cover file names')
       .setDesc('Comma-separated. If a folder contains one of these files, it becomes the cover automatically.')
       .addTextArea((text) => text
-        .setValue(this.plugin.settings.coverFileNames)
+        .setValue(this.plugin.pluginSettings.coverFileNames)
         .onChange(async (value) => {
-          this.plugin.settings.coverFileNames = value;
+          this.plugin.pluginSettings.coverFileNames = value;
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
         }));
@@ -621,23 +621,19 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
     this.addSettingTab(new FolderCoverWallSettingTab(this.app, this));
 
     this.app.workspace.onLayoutReady(() => {
-      if (this.settings.autoReplaceLeftPane) this.activateView(true);
+      if (this.pluginSettings.autoReplaceLeftPane) this.activateView(true);
     });
   }
 
-  onunload() {
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL);
-  }
-
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    if (!this.settings.customCovers) this.settings.customCovers = {};
-    if (typeof this.settings.autoUseFirstImage !== 'boolean') this.settings.autoUseFirstImage = true;
-    if (typeof this.settings.showFiles !== 'boolean') this.settings.showFiles = true;
+    this.pluginSettings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    if (!this.pluginSettings.customCovers) this.pluginSettings.customCovers = {};
+    if (typeof this.pluginSettings.autoUseFirstImage !== 'boolean') this.pluginSettings.autoUseFirstImage = true;
+    if (typeof this.pluginSettings.showFiles !== 'boolean') this.pluginSettings.showFiles = true;
   }
 
   async saveSettings() {
-    await this.saveData(this.settings);
+    await this.saveData(this.pluginSettings);
   }
 
   async activateView(replaceCurrentLeftLeaf = false) {

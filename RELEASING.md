@@ -4,12 +4,11 @@
 
 Before the first public release:
 
-1. Replace `YOUR_NAME` in `manifest.json` and `package.json` with the public author name you want users to see.
-2. Review `LICENSE` and change the copyright holder if desired.
-3. Create a public GitHub repository named `folder-cover-wall` (recommended).
-4. Push this project to the repository.
-5. Run `npm install` and `npm run build` once locally if possible.
-6. Run `npm run check-release`.
+1. Create the public repository `https://github.com/Arebrodo/folder-cover-wall`.
+2. Push this project to that repository.
+3. Run `npm install` and `npm run build` once locally if possible.
+4. Run `npm run check-release`.
+5. Confirm the author metadata is still `Arebrodo` and the repository URL has not changed.
 
 ## Create a release manually
 
@@ -49,6 +48,6 @@ After you have a public GitHub repository and a matching GitHub Release:
 
 1. Sign in to the Obsidian Community directory.
 2. Link your GitHub account.
-3. Add the plugin using the repository URL.
+3. Add the plugin using `https://github.com/Arebrodo/folder-cover-wall`.
 4. Address any automated review feedback.
 5. If changes require a new release, increment the version and publish a new matching GitHub Release.

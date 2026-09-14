@@ -1,5 +1,7 @@
 # Folder Cover Wall
 
+By [Arebrodo](https://github.com/Arebrodo) · [中文说明](./README.zh-CN.md)
+
 Folder Cover Wall turns Obsidian's sidebar into a visual folder browser. Each folder is represented by a large cover card, while notes and other files remain available inside the selected folder.
 
 ![Folder Cover Wall screenshot](./assets/screenshot.png)
@@ -102,6 +104,12 @@ npm run build
 ```
 
 The production build outputs `main.js` in the repository root.
+
+## Repository
+
+GitHub: https://github.com/Arebrodo/folder-cover-wall
+
+Issues: https://github.com/Arebrodo/folder-cover-wall/issues
 
 ## Releasing
 
