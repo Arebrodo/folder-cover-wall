@@ -1,0 +1,9 @@
+{
+  "id": "folder-cover-wall",
+  "name": "Folder Cover Wall",
+  "version": "0.4.0",
+  "minAppVersion": "1.8.0",
+  "description": "Browse Obsidian folders as a visual cover wall in the sidebar, with custom vault or external-image covers.",
+  "author": "YOUR_NAME",
+  "isDesktopOnly": false
+}
