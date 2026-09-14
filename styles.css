@@ -354,3 +354,112 @@
 .workspace-split.mod-left-split .fcw-grid {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--fcw-card-min-width)), 1fr));
 }
+
+/* External cover storage manager */
+.fcw-manager-modal {
+  min-width: min(720px, 90vw);
+}
+
+.fcw-manager-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 12px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.fcw-manager-summary > div {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--background-secondary);
+}
+
+.fcw-manager-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.fcw-manager-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 55vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.fcw-manager-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary-alt);
+}
+
+.fcw-manager-thumb {
+  width: 84px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 7px;
+  background: var(--background-secondary);
+}
+
+.fcw-manager-info {
+  min-width: 0;
+}
+
+.fcw-manager-name {
+  overflow: hidden;
+  color: var(--text-normal);
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fcw-manager-meta,
+.fcw-manager-paths {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fcw-manager-paths.is-unused {
+  color: var(--text-warning);
+}
+
+.fcw-manager-remove {
+  width: 34px;
+  height: 34px;
+  padding: 7px;
+}
+
+.fcw-manager-remove svg {
+  width: 100%;
+  height: 100%;
+}
+
+.fcw-manager-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+@media (max-width: 560px) {
+  .fcw-manager-row {
+    grid-template-columns: 64px minmax(0, 1fr) 34px;
+  }
+  .fcw-manager-thumb {
+    width: 64px;
+    height: 48px;
+  }
+}

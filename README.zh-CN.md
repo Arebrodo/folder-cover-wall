@@ -70,3 +70,9 @@ npm run build
 ## License
 
 MIT，见 [LICENSE](./LICENSE)。
+
+### 文件夹改名继承与外部图片管理
+
+文件夹重命名后，封面绑定会自动迁移；父文件夹改名时，其所有子文件夹的封面也会一起继承。通过 **设置 → Folder Cover Wall → External cover storage → Manage**，或命令面板中的 **Manage external cover storage**，可以查看和清理复制进插件数据中的外部图片。
+
+管理器会显示总占用、每张图片被哪些文件夹使用、孤立映射，并支持删除单张图片、清理未使用图片和孤立数据。同一张外部图片被多个文件夹复用时只保存一份。

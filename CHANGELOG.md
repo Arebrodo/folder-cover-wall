@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Folder cover assignments now follow folder renames automatically, including covers assigned to descendant folders.
+- Vault-image cover paths and the configured root/current folder are migrated when their parent folder is renamed.
+- Added automatic cleanup when folders or referenced vault cover images are deleted.
+- Added a shared external-cover image library so the same copied image is stored only once.
+- Added an External Cover Storage manager with storage totals, usage information, per-image removal, orphan cleanup, and bulk cleanup controls.
+- Existing v0.4 external cover data is migrated automatically on first load.
+
 ## 0.4.1
 
 - Fixed Community Directory automated review blockers.

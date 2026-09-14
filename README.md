@@ -18,6 +18,13 @@ Folder Cover Wall turns Obsidian's sidebar into a visual folder browser. Each fo
 - Use a generated fallback cover when no image is available.
 - Configure root folder, card width, aspect ratio, folder/file counts, and file visibility.
 
+
+### Rename-safe covers and storage management
+
+Folder cover assignments follow folder renames automatically, including nested folders. External images copied into plugin data can be reviewed and deleted from **Settings → Folder Cover Wall → External cover storage → Manage** or from the command palette with **Manage external cover storage**.
+
+The manager shows total embedded storage, image usage, orphaned mappings, and cleanup controls. Reusing the same external image across multiple folders stores only one copy.
+
 ## Installation
 
 ### Community Plugins
@@ -113,7 +120,7 @@ Issues: https://github.com/Arebrodo/folder-cover-wall/issues
 
 ## Releasing
 
-See [RELEASING.md](./RELEASING.md). The repository includes a GitHub Actions workflow that can create a release automatically when you push a tag such as `0.4.0`.
+See [RELEASING.md](./RELEASING.md). The repository includes a GitHub Actions workflow that can create a release automatically when you push a tag such as `0.5.0`.
 
 ## License
 
