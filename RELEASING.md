@@ -18,8 +18,8 @@ Before the first public release:
 4. Create a Git tag whose name is exactly the version number, for example:
 
 ```bash
-git tag 0.5.0
-git push origin 0.5.0
+git tag 0.6.0
+git push origin 0.6.0
 ```
 
 The included GitHub Actions release workflow will build the plugin, verify the tag, and create a GitHub Release containing:

@@ -27,6 +27,10 @@ const DEFAULT_SETTINGS = {
   showFiles: true,
   autoUseFirstImage: true,
   coverFileNames: 'cover.jpg,cover.jpeg,cover.png,cover.webp,.folder-cover.jpg,.folder-cover.png,.folder-cover.webp',
+  coverMaxDimension: 768,
+  coverWebpQuality: 80,
+  optimizeVaultCovers: true,
+  lazyLoadCovers: true,
   customCovers: {},
   externalImages: {},
 };
@@ -76,6 +80,124 @@ function hashText(text) {
   return `${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}${text.length.toString(36)}`;
 }
 
+function mimeFromName(name) {
+  const ext = String(name || '').split('.').pop()?.toLowerCase();
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'bmp') return 'image/bmp';
+  if (ext === 'svg') return 'image/svg+xml';
+  return 'application/octet-stream';
+}
+
+function dataUrlToBlob(dataUrl) {
+  const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(String(dataUrl || ''));
+  if (!match) throw new Error('Invalid image data URL.');
+  const mime = match[1] || 'application/octet-stream';
+  const isBase64 = Boolean(match[2]);
+  const payload = match[3] || '';
+  if (!isBase64) {
+    return new Blob([decodeURIComponent(payload)], { type: mime });
+  }
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string'
+      ? resolve(reader.result)
+      : reject(new Error('Could not encode optimized cover image.'));
+    reader.onerror = () => reject(reader.error || new Error('Could not encode optimized cover image.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function decodeImageBlob(blob) {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        cleanup: () => bitmap.close(),
+      };
+    } catch (_) {}
+  }
+
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = new Image();
+    image.decoding = 'async';
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error('Could not decode the selected image.'));
+      image.src = url;
+    });
+    return {
+      source: image,
+      width: image.naturalWidth || image.width,
+      height: image.naturalHeight || image.height,
+      cleanup: () => {
+        image.src = '';
+        URL.revokeObjectURL(url);
+      },
+    };
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+}
+
+async function optimizeBlobToWebp(blob, maxDimension = 768, qualityPercent = 80) {
+  const decoded = await decodeImageBlob(blob);
+  const sourceWidth = Math.max(1, Number(decoded.width) || 1);
+  const sourceHeight = Math.max(1, Number(decoded.height) || 1);
+  const longest = Math.max(sourceWidth, sourceHeight);
+  const limit = Math.max(256, Number(maxDimension) || 768);
+  const scale = Math.min(1, limit / longest);
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const quality = Math.min(0.95, Math.max(0.45, (Number(qualityPercent) || 80) / 100));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { alpha: true });
+  if (!ctx) {
+    decoded.cleanup();
+    throw new Error('Could not create an image canvas.');
+  }
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(decoded.source, 0, 0, width, height);
+
+  try {
+    let output = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
+    if (!output) {
+      const fallbackUrl = canvas.toDataURL('image/webp', quality);
+      output = dataUrlToBlob(fallbackUrl);
+    }
+    return {
+      blob: output,
+      width,
+      height,
+      sourceWidth,
+      sourceHeight,
+    };
+  } finally {
+    decoded.cleanup();
+    // Explicitly release the potentially large canvas backing store.
+    canvas.width = 1;
+    canvas.height = 1;
+  }
+}
+
 function rewritePath(path, oldPath, newPath, includeDescendants) {
   if (typeof path !== 'string' || !path) return path;
   if (path === oldPath) return newPath;
@@ -119,6 +241,8 @@ class FolderCoverWallView extends ItemView {
     this.plugin = plugin;
     this.currentPath = plugin.pluginSettings.rootPath || '';
     this.boundRefresh = () => this.refresh();
+    this.coverObserver = null;
+    this.pendingCoverSources = new WeakMap();
   }
 
   getViewType() {
@@ -140,7 +264,61 @@ class FolderCoverWallView extends ItemView {
   }
 
   async onClose() {
+    this.releaseRenderedCovers();
     this.contentEl.empty();
+  }
+
+  releaseRenderedCovers() {
+    if (this.coverObserver) {
+      this.coverObserver.disconnect();
+      this.coverObserver = null;
+    }
+    this.pendingCoverSources = new WeakMap();
+    for (const img of this.contentEl.querySelectorAll('img.fcw-cover-image')) {
+      try {
+        img.removeAttribute('src');
+        img.src = '';
+      } catch (_) {}
+    }
+  }
+
+  ensureCoverObserver() {
+    if (this.coverObserver || !this.plugin.pluginSettings.lazyLoadCovers || typeof IntersectionObserver === 'undefined') return;
+    this.coverObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const img = entry.target;
+        this.coverObserver?.unobserve(img);
+        const source = this.pendingCoverSources.get(img);
+        this.pendingCoverSources.delete(img);
+        if (source) void this.hydrateCoverImage(img, source);
+      }
+    }, { root: this.contentEl, rootMargin: '240px 0px', threshold: 0.01 });
+  }
+
+  scheduleCoverImage(img, source) {
+    if (!source) return;
+    if (!this.plugin.pluginSettings.lazyLoadCovers || typeof IntersectionObserver === 'undefined') {
+      void this.hydrateCoverImage(img, source);
+      return;
+    }
+    this.ensureCoverObserver();
+    this.pendingCoverSources.set(img, source);
+    this.coverObserver?.observe(img);
+  }
+
+  async hydrateCoverImage(img, source) {
+    try {
+      img.classList.add('is-loading');
+      const resolved = await this.plugin.resolveCoverDisplayUrl(source);
+      if (!resolved || !img.isConnected) return;
+      img.src = resolved;
+      img.title = source.kind === 'external' ? `External cover: ${source.name || 'External image'}` : (source.name || '');
+    } catch (error) {
+      console.error('Folder Cover Wall: failed to prepare cover image', error);
+    } finally {
+      if (img.isConnected) img.classList.remove('is-loading');
+    }
   }
 
   resolveFolder(path) {
@@ -177,7 +355,7 @@ class FolderCoverWallView extends ItemView {
     return { folders, files };
   }
 
-  async findCoverSource(folder) {
+  findCoverSource(folder) {
     const custom = this.plugin.pluginSettings.customCovers[folder.path];
 
     // Backward compatibility with v0.1-v0.3, where a custom cover was stored
@@ -185,27 +363,25 @@ class FolderCoverWallView extends ItemView {
     if (typeof custom === 'string' && custom) {
       const customFile = this.app.vault.getAbstractFileByPath(normalizePath(custom));
       if (isImageFile(customFile)) {
-        return { src: this.app.vault.getResourcePath(customFile), kind: 'vault', name: customFile.name };
+        return { kind: 'vault', file: customFile, name: customFile.name };
       }
     }
 
-    // v0.4+ stores richer cover descriptors. External images are embedded as
-    // data URLs so they keep working even if the original OS file is moved.
     if (custom && typeof custom === 'object') {
       if (custom.type === 'external' && custom.imageId) {
         const image = this.plugin.pluginSettings.externalImages[custom.imageId];
         if (image && typeof image.dataUrl === 'string' && image.dataUrl.startsWith('data:image/')) {
-          return { src: image.dataUrl, kind: 'external', name: image.name || 'External image' };
+          return { kind: 'external', imageId: custom.imageId, name: image.name || 'External image' };
         }
       }
       // Backward-compatible fallback for an unmigrated v0.4 record.
       if (custom.type === 'external' && typeof custom.dataUrl === 'string' && custom.dataUrl.startsWith('data:image/')) {
-        return { src: custom.dataUrl, kind: 'external', name: custom.name || 'External image' };
+        return { kind: 'inline', dataUrl: custom.dataUrl, name: custom.name || 'External image' };
       }
       if (custom.type === 'vault' && custom.path) {
         const customFile = this.app.vault.getAbstractFileByPath(normalizePath(custom.path));
         if (isImageFile(customFile)) {
-          return { src: this.app.vault.getResourcePath(customFile), kind: 'vault', name: customFile.name };
+          return { kind: 'vault', file: customFile, name: customFile.name };
         }
       }
     }
@@ -218,7 +394,7 @@ class FolderCoverWallView extends ItemView {
     for (const name of names) {
       const candidate = this.app.vault.getAbstractFileByPath(normalizePath(`${folder.path}/${name}`));
       if (isImageFile(candidate)) {
-        return { src: this.app.vault.getResourcePath(candidate), kind: 'auto', name: candidate.name };
+        return { kind: 'auto', file: candidate, name: candidate.name };
       }
     }
 
@@ -227,24 +403,11 @@ class FolderCoverWallView extends ItemView {
         .filter(isImageFile)
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))[0];
       if (firstImage) {
-        return { src: this.app.vault.getResourcePath(firstImage), kind: 'auto', name: firstImage.name };
+        return { kind: 'auto', file: firstImage, name: firstImage.name };
       }
     }
 
     return null;
-  }
-
-  readExternalImageAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result;
-        if (typeof result === 'string' && result.startsWith('data:image/')) resolve(result);
-        else reject(new Error('The selected file could not be read as an image.'));
-      };
-      reader.onerror = () => reject(reader.error || new Error('Failed to read the selected image.'));
-      reader.readAsDataURL(file);
-    });
   }
 
   async chooseExternalCover(folder) {
@@ -257,32 +420,35 @@ class FolderCoverWallView extends ItemView {
       if (!file) return;
 
       try {
-        // Very large images work, but embedding them in data.json makes the
-        // plugin settings unnecessarily heavy. Warn without blocking the user.
-        if (file.size > 12 * 1024 * 1024) {
-          new Notice('Large image selected. The cover will work, but the plugin data file may become large.');
-        }
-
-        const dataUrl = await this.readExternalImageAsDataUrl(file);
+        new Notice('Optimizing cover image…');
+        const optimized = await this.plugin.optimizeExternalFile(file);
         const imageId = this.plugin.storeExternalImage({
           name: file.name,
-          mime: file.type || 'image/*',
+          mime: 'image/webp',
           originalSize: file.size,
-          dataUrl,
+          storedSize: optimized.storedSize,
+          width: optimized.width,
+          height: optimized.height,
+          sourceWidth: optimized.sourceWidth,
+          sourceHeight: optimized.sourceHeight,
+          optimizedVersion: 1,
+          optimizationMaxDimension: this.plugin.pluginSettings.coverMaxDimension,
+          optimizationQuality: this.plugin.pluginSettings.coverWebpQuality,
+          dataUrl: optimized.dataUrl,
         });
         this.plugin.pluginSettings.customCovers[folder.path] = { type: 'external', imageId };
         this.plugin.cleanupUnusedExternalImages();
         await this.plugin.saveSettings();
         await this.refresh();
-        new Notice(`External cover set for ${folder.name}`);
+        new Notice(`External cover set for ${folder.name} · ${optimized.width}×${optimized.height} · ${formatBytes(optimized.storedSize)}`);
       } catch (error) {
-        console.error('Folder Cover Wall: failed to load external cover', error);
+        console.error('Folder Cover Wall: failed to optimize external cover', error);
         new Notice('Could not use that image as a folder cover.');
+      } finally {
+        input.value = '';
       }
     }, { once: true });
 
-    // Chromium/Electron opens the operating-system file picker here, so the
-    // selected image may live anywhere on the computer, not only in the vault.
     input.click();
   }
 
@@ -409,15 +575,14 @@ class FolderCoverWallView extends ItemView {
     card.style.setProperty('--fcw-folder-hue', `${stableHue(folder.path || folder.name)}`);
 
     const coverWrap = card.createDiv({ cls: 'fcw-cover' });
-    const coverSource = await this.findCoverSource(folder);
+    const coverSource = this.findCoverSource(folder);
 
     if (coverSource) {
       const img = coverWrap.createEl('img', {
         cls: 'fcw-cover-image',
-        attr: { alt: `${folder.name} cover`, loading: 'lazy' },
+        attr: { alt: `${folder.name} cover`, loading: 'lazy', decoding: 'async' },
       });
-      img.src = coverSource.src;
-      img.title = coverSource.kind === 'external' ? `External cover: ${coverSource.name}` : coverSource.name;
+      this.scheduleCoverImage(img, coverSource);
     } else {
       const fallback = coverWrap.createDiv({ cls: 'fcw-cover-fallback' });
       const icon = fallback.createDiv({ cls: 'fcw-folder-icon' });
@@ -495,6 +660,7 @@ class FolderCoverWallView extends ItemView {
 
   async refresh() {
     if (!this.contentEl) return;
+    this.releaseRenderedCovers();
     this.contentEl.empty();
 
     const root = this.rootFolder();
@@ -610,6 +776,18 @@ class ExternalCoverManagerModal extends Modal {
     summary.createDiv({ text: `${orphanedMappings.length} orphaned mapping${orphanedMappings.length === 1 ? '' : 's'}` });
 
     const actions = contentEl.createDiv({ cls: 'fcw-manager-actions' });
+    const optimizeStored = actions.createEl('button', { text: 'Optimize stored images', attr: { type: 'button' } });
+    optimizeStored.addEventListener('click', async () => {
+      optimizeStored.disabled = true;
+      optimizeStored.textContent = 'Optimizing…';
+      const result = await this.plugin.optimizeAllExternalImages();
+      const saved = Math.max(0, result.beforeBytes - result.afterBytes);
+      new Notice(result.optimized
+        ? `Optimized ${result.optimized} stored cover${result.optimized === 1 ? '' : 's'} and saved ${formatBytes(saved)}.`
+        : 'Stored covers are already optimized for the current settings.');
+      this.render();
+    });
+
     const cleanUnused = actions.createEl('button', { text: 'Remove unused images', attr: { type: 'button' } });
     cleanUnused.addEventListener('click', async () => {
       const removed = this.plugin.cleanupUnusedExternalImages();
@@ -656,15 +834,20 @@ class ExternalCoverManagerModal extends Modal {
     for (const [imageId, image] of images.sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''))) {
       const usages = this.plugin.getExternalImageUsage(imageId);
       const row = list.createDiv({ cls: 'fcw-manager-row' });
-      const preview = row.createEl('img', { cls: 'fcw-manager-thumb', attr: { alt: image.name || 'Stored external cover' } });
+      const preview = row.createEl('img', {
+        cls: 'fcw-manager-thumb',
+        attr: { alt: image.name || 'Stored external cover', loading: 'lazy', decoding: 'async' },
+      });
       preview.src = image.dataUrl;
 
       const info = row.createDiv({ cls: 'fcw-manager-info' });
       info.createDiv({ cls: 'fcw-manager-name', text: image.name || 'External image' });
       const stored = this.plugin.externalImageStoredBytes(image);
+      const original = Number(image.originalSize) || stored;
+      const dimensions = image.width && image.height ? ` · ${image.width}×${image.height}` : '';
       info.createDiv({
         cls: 'fcw-manager-meta',
-        text: `${formatBytes(stored)} stored · used by ${usages.length} folder${usages.length === 1 ? '' : 's'}`,
+        text: `${formatBytes(stored)} stored${original > stored ? ` · source ${formatBytes(original)}` : ''}${dimensions} · used by ${usages.length} folder${usages.length === 1 ? '' : 's'}`,
       });
       if (usages.length) {
         info.createDiv({
@@ -814,6 +997,61 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
           this.plugin.refreshOpenViews();
         }));
 
+    containerEl.createEl('h3', { text: 'Performance' });
+
+    new Setting(containerEl)
+      .setName('Maximum cover resolution')
+      .setDesc('Images are reduced to this maximum width or height before being used as covers. 768 px is recommended for the sidebar.')
+      .addDropdown((dropdown) => dropdown
+        .addOption('512', '512 px')
+        .addOption('768', '768 px (recommended)')
+        .addOption('1024', '1024 px')
+        .addOption('1280', '1280 px')
+        .setValue(String(this.plugin.pluginSettings.coverMaxDimension))
+        .onChange(async (value) => {
+          this.plugin.pluginSettings.coverMaxDimension = Number(value) || 768;
+          this.plugin.clearImageCaches();
+          await this.plugin.saveSettings();
+          this.plugin.refreshOpenViews();
+        }));
+
+    new Setting(containerEl)
+      .setName('WebP cover quality')
+      .setDesc('Compression quality used for generated cover thumbnails. Lower values reduce storage and memory pressure.')
+      .addSlider((slider) => slider
+        .setLimits(55, 95, 5)
+        .setDynamicTooltip()
+        .setValue(this.plugin.pluginSettings.coverWebpQuality)
+        .onChange(async (value) => {
+          this.plugin.pluginSettings.coverWebpQuality = value;
+          this.plugin.clearImageCaches();
+          await this.plugin.saveSettings();
+          this.plugin.refreshOpenViews();
+        }));
+
+    new Setting(containerEl)
+      .setName('Optimize vault cover images in memory')
+      .setDesc('Use temporary low-resolution WebP thumbnails for vault images instead of keeping full-resolution source images decoded in memory. Original files are never modified.')
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.pluginSettings.optimizeVaultCovers)
+        .onChange(async (value) => {
+          this.plugin.pluginSettings.optimizeVaultCovers = value;
+          this.plugin.clearImageCaches();
+          await this.plugin.saveSettings();
+          this.plugin.refreshOpenViews();
+        }));
+
+    new Setting(containerEl)
+      .setName('Lazy-load cover images')
+      .setDesc('Only prepare cover images when cards are near the visible area. Recommended for folders with many subfolders.')
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.pluginSettings.lazyLoadCovers)
+        .onChange(async (value) => {
+          this.plugin.pluginSettings.lazyLoadCovers = value;
+          await this.plugin.saveSettings();
+          this.plugin.refreshOpenViews();
+        }));
+
     const storageImages = Object.values(this.plugin.pluginSettings.externalImages || {});
     const storageBytes = storageImages.reduce((sum, image) => sum + this.plugin.externalImageStoredBytes(image), 0);
     const orphanCount = this.plugin.getOrphanedCoverMappings().length;
@@ -828,7 +1066,16 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
 
 module.exports = class FolderCoverWallPlugin extends Plugin {
   async onload() {
+    this.vaultThumbnailCache = new Map();
+    this.externalObjectUrlCache = new Map();
+    this.thumbnailTasks = new Map();
+    this.thumbnailActive = 0;
+    this.thumbnailQueue = [];
     await this.loadSettings();
+    const migrationResult = await this.optimizeLegacyExternalImages();
+    if (migrationResult.optimized > 0) {
+      new Notice(`Folder Cover Wall optimized ${migrationResult.optimized} stored cover${migrationResult.optimized === 1 ? '' : 's'} for lower memory use.`);
+    }
 
     this.registerView(VIEW_TYPE_FOLDER_COVER_WALL, (leaf) => new FolderCoverWallView(leaf, this));
 
@@ -857,11 +1104,31 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
       callback: () => new ExternalCoverManagerModal(this.app, this).open(),
     });
 
+    this.addCommand({
+      id: 'optimize-stored-cover-images',
+      name: 'Optimize stored cover images',
+      callback: async () => {
+        const result = await this.optimizeAllExternalImages();
+        const saved = Math.max(0, result.beforeBytes - result.afterBytes);
+        new Notice(result.optimized
+          ? `Optimized ${result.optimized} stored cover${result.optimized === 1 ? '' : 's'} and saved ${formatBytes(saved)}.`
+          : 'Stored covers are already optimized for the current settings.');
+      },
+    });
+
     this.addSettingTab(new FolderCoverWallSettingTab(this.app, this));
 
     this.app.workspace.onLayoutReady(() => {
-      if (this.pluginSettings.autoReplaceLeftPane) this.activateView(true);
+      const removed = this.removeDuplicateViews();
+      if (removed > 0) {
+        new Notice(`Folder Cover Wall removed ${removed} duplicate sidebar tab${removed === 1 ? '' : 's'}.`);
+      }
+      if (this.pluginSettings.autoReplaceLeftPane) void this.activateView(true);
     });
+  }
+
+  onunload() {
+    this.clearImageCaches();
   }
 
   async loadSettings() {
@@ -870,6 +1137,10 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
     if (!this.pluginSettings.externalImages) this.pluginSettings.externalImages = {};
     if (typeof this.pluginSettings.autoUseFirstImage !== 'boolean') this.pluginSettings.autoUseFirstImage = true;
     if (typeof this.pluginSettings.showFiles !== 'boolean') this.pluginSettings.showFiles = true;
+    if (!Number.isFinite(this.pluginSettings.coverMaxDimension)) this.pluginSettings.coverMaxDimension = 768;
+    if (!Number.isFinite(this.pluginSettings.coverWebpQuality)) this.pluginSettings.coverWebpQuality = 80;
+    if (typeof this.pluginSettings.optimizeVaultCovers !== 'boolean') this.pluginSettings.optimizeVaultCovers = true;
+    if (typeof this.pluginSettings.lazyLoadCovers !== 'boolean') this.pluginSettings.lazyLoadCovers = true;
 
     // Migrate v0.4 external covers that embedded their data directly in each
     // folder mapping into the shared external-image library introduced in v0.5.
@@ -893,8 +1164,242 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
     await this.saveData(this.pluginSettings);
   }
 
+  cacheLimit() {
+    return 12;
+  }
+
+  async withThumbnailSlot(work) {
+    if (this.thumbnailActive >= 2) {
+      await new Promise((resolve) => this.thumbnailQueue.push(resolve));
+    }
+    this.thumbnailActive++;
+    try {
+      return await work();
+    } finally {
+      this.thumbnailActive = Math.max(0, this.thumbnailActive - 1);
+      const next = this.thumbnailQueue.shift();
+      if (next) next();
+    }
+  }
+
+  touchUrlCache(cache, key, entry) {
+    if (cache.has(key)) cache.delete(key);
+    cache.set(key, entry);
+    while (cache.size > this.cacheLimit()) {
+      const oldestKey = cache.keys().next().value;
+      const oldest = cache.get(oldestKey);
+      if (oldest?.url) URL.revokeObjectURL(oldest.url);
+      cache.delete(oldestKey);
+    }
+    return entry.url;
+  }
+
+  clearUrlCache(cache) {
+    for (const entry of cache.values()) {
+      if (entry?.url) URL.revokeObjectURL(entry.url);
+    }
+    cache.clear();
+  }
+
+  clearImageCaches() {
+    this.clearUrlCache(this.vaultThumbnailCache);
+    this.clearUrlCache(this.externalObjectUrlCache);
+    this.thumbnailTasks.clear();
+    while (this.thumbnailQueue?.length) {
+      const next = this.thumbnailQueue.shift();
+      if (next) next();
+    }
+  }
+
+  revokeExternalImageUrl(imageId) {
+    const entry = this.externalObjectUrlCache.get(imageId);
+    if (entry?.url) URL.revokeObjectURL(entry.url);
+    this.externalObjectUrlCache.delete(imageId);
+  }
+
+  async optimizeExternalFile(file) {
+    const optimized = await optimizeBlobToWebp(
+      file,
+      this.pluginSettings.coverMaxDimension,
+      this.pluginSettings.coverWebpQuality,
+    );
+    const dataUrl = await blobToDataUrl(optimized.blob);
+    return {
+      ...optimized,
+      dataUrl,
+      storedSize: optimized.blob.size,
+    };
+  }
+
+  externalImageNeedsOptimization(image) {
+    if (!image || typeof image.dataUrl !== 'string' || !image.dataUrl.startsWith('data:image/')) return false;
+    if (image.optimizedVersion !== 1) return true;
+    if (String(image.mime || '').toLowerCase() !== 'image/webp') return true;
+    const maxDimension = Math.max(256, Number(this.pluginSettings.coverMaxDimension) || 768);
+    if ((Number(image.width) || 0) > maxDimension || (Number(image.height) || 0) > maxDimension) return true;
+    const currentQuality = Number(image.optimizationQuality);
+    if (Number.isFinite(currentQuality) && currentQuality > this.pluginSettings.coverWebpQuality) return true;
+    return false;
+  }
+
+  async optimizeExternalImageRecord(imageId, force = false) {
+    const image = this.pluginSettings.externalImages?.[imageId];
+    if (!image || typeof image.dataUrl !== 'string' || !image.dataUrl.startsWith('data:image/')) return null;
+    if (!force && !this.externalImageNeedsOptimization(image)) return null;
+
+    const beforeBytes = this.externalImageStoredBytes(image);
+    const blob = dataUrlToBlob(image.dataUrl);
+    const optimized = await optimizeBlobToWebp(
+      blob,
+      this.pluginSettings.coverMaxDimension,
+      this.pluginSettings.coverWebpQuality,
+    );
+    const dataUrl = await blobToDataUrl(optimized.blob);
+
+    image.dataUrl = dataUrl;
+    image.mime = 'image/webp';
+    image.storedSize = optimized.blob.size;
+    image.width = optimized.width;
+    image.height = optimized.height;
+    image.sourceWidth = image.sourceWidth || optimized.sourceWidth;
+    image.sourceHeight = image.sourceHeight || optimized.sourceHeight;
+    image.optimizedVersion = 1;
+    image.optimizationMaxDimension = this.pluginSettings.coverMaxDimension;
+    image.optimizationQuality = this.pluginSettings.coverWebpQuality;
+    image.optimizedAt = Date.now();
+    this.revokeExternalImageUrl(imageId);
+
+    return {
+      beforeBytes,
+      afterBytes: optimized.blob.size,
+      width: optimized.width,
+      height: optimized.height,
+    };
+  }
+
+  async optimizeLegacyExternalImages() {
+    const entries = Object.keys(this.pluginSettings.externalImages || {});
+    let optimized = 0;
+    let beforeBytes = 0;
+    let afterBytes = 0;
+
+    for (const imageId of entries) {
+      if (!this.externalImageNeedsOptimization(this.pluginSettings.externalImages[imageId])) continue;
+      try {
+        const result = await this.optimizeExternalImageRecord(imageId, false);
+        if (!result) continue;
+        optimized++;
+        beforeBytes += result.beforeBytes;
+        afterBytes += result.afterBytes;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      } catch (error) {
+        console.error(`Folder Cover Wall: failed to optimize stored cover ${imageId}`, error);
+      }
+    }
+
+    if (optimized) {
+      await this.saveSettings();
+      this.clearUrlCache(this.externalObjectUrlCache);
+    }
+    return { optimized, beforeBytes, afterBytes };
+  }
+
+  async optimizeAllExternalImages() {
+    const entries = Object.keys(this.pluginSettings.externalImages || {});
+    let optimized = 0;
+    let beforeBytes = 0;
+    let afterBytes = 0;
+
+    for (const imageId of entries) {
+      const image = this.pluginSettings.externalImages[imageId];
+      if (!this.externalImageNeedsOptimization(image)) continue;
+      try {
+        const result = await this.optimizeExternalImageRecord(imageId, false);
+        if (!result) continue;
+        optimized++;
+        beforeBytes += result.beforeBytes;
+        afterBytes += result.afterBytes;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      } catch (error) {
+        console.error(`Folder Cover Wall: failed to optimize stored cover ${imageId}`, error);
+      }
+    }
+
+    if (optimized) {
+      await this.saveSettings();
+      await this.refreshOpenViews();
+    }
+    return { optimized, beforeBytes, afterBytes };
+  }
+
+  async getExternalImageObjectUrl(imageId) {
+    const cached = this.externalObjectUrlCache.get(imageId);
+    if (cached) {
+      this.externalObjectUrlCache.delete(imageId);
+      this.externalObjectUrlCache.set(imageId, cached);
+      return cached.url;
+    }
+    const image = this.pluginSettings.externalImages?.[imageId];
+    if (!image?.dataUrl) return null;
+    const blob = dataUrlToBlob(image.dataUrl);
+    const url = URL.createObjectURL(blob);
+    return this.touchUrlCache(this.externalObjectUrlCache, imageId, { url, bytes: blob.size });
+  }
+
+  vaultThumbnailKey(file) {
+    return `${file.path}|${file.stat?.mtime || 0}|${this.pluginSettings.coverMaxDimension}|${this.pluginSettings.coverWebpQuality}`;
+  }
+
+  async getVaultThumbnailUrl(file) {
+    const key = this.vaultThumbnailKey(file);
+    const cached = this.vaultThumbnailCache.get(key);
+    if (cached) {
+      this.vaultThumbnailCache.delete(key);
+      this.vaultThumbnailCache.set(key, cached);
+      return cached.url;
+    }
+    if (this.thumbnailTasks.has(key)) return this.thumbnailTasks.get(key);
+
+    const task = this.withThumbnailSlot(async () => {
+      const binary = await this.app.vault.readBinary(file);
+      const blob = new Blob([binary], { type: mimeFromName(file.name) });
+      const optimized = await optimizeBlobToWebp(
+        blob,
+        this.pluginSettings.coverMaxDimension,
+        this.pluginSettings.coverWebpQuality,
+      );
+      const url = URL.createObjectURL(optimized.blob);
+      return this.touchUrlCache(this.vaultThumbnailCache, key, { url, bytes: optimized.blob.size });
+    });
+
+    this.thumbnailTasks.set(key, task);
+    try {
+      return await task;
+    } finally {
+      this.thumbnailTasks.delete(key);
+    }
+  }
+
+  async resolveCoverDisplayUrl(source) {
+    if (!source) return null;
+    if (source.kind === 'external' && source.imageId) {
+      return this.getExternalImageObjectUrl(source.imageId);
+    }
+    if (source.kind === 'inline' && source.dataUrl) return source.dataUrl;
+    if ((source.kind === 'vault' || source.kind === 'auto') && source.file) {
+      if (!this.pluginSettings.optimizeVaultCovers) return this.app.vault.getResourcePath(source.file);
+      try {
+        return await this.getVaultThumbnailUrl(source.file);
+      } catch (error) {
+        console.error('Folder Cover Wall: vault thumbnail optimization failed; using original resource', error);
+        return this.app.vault.getResourcePath(source.file);
+      }
+    }
+    return null;
+  }
+
   externalImageStoredBytes(image) {
-    return estimateDataUrlBytes(image?.dataUrl || '');
+    return Number(image?.storedSize) || estimateDataUrlBytes(image?.dataUrl || '');
   }
 
   storeExternalImage(image) {
@@ -908,8 +1413,16 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
     if (!this.pluginSettings.externalImages[imageId]) {
       this.pluginSettings.externalImages[imageId] = {
         name: image.name || 'External image',
-        mime: image.mime || 'image/*',
+        mime: image.mime || 'image/webp',
         originalSize: Number(image.originalSize) || estimateDataUrlBytes(image.dataUrl),
+        storedSize: Number(image.storedSize) || estimateDataUrlBytes(image.dataUrl),
+        width: Number(image.width) || undefined,
+        height: Number(image.height) || undefined,
+        sourceWidth: Number(image.sourceWidth) || undefined,
+        sourceHeight: Number(image.sourceHeight) || undefined,
+        optimizedVersion: Number(image.optimizedVersion) || 0,
+        optimizationMaxDimension: Number(image.optimizationMaxDimension) || undefined,
+        optimizationQuality: Number(image.optimizationQuality) || undefined,
         dataUrl: image.dataUrl,
         addedAt: Date.now(),
       };
@@ -935,6 +1448,7 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
     let removed = 0;
     for (const imageId of Object.keys(this.pluginSettings.externalImages || {})) {
       if (!used.has(imageId)) {
+        this.revokeExternalImageUrl(imageId);
         delete this.pluginSettings.externalImages[imageId];
         removed++;
       }
@@ -966,6 +1480,7 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
         }
       }
     }
+    this.revokeExternalImageUrl(imageId);
     delete this.pluginSettings.externalImages[imageId];
   }
 
@@ -975,10 +1490,12 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
         delete this.pluginSettings.customCovers[folderPath];
       }
     }
+    this.clearUrlCache(this.externalObjectUrlCache);
     this.pluginSettings.externalImages = {};
   }
 
   async handleVaultRename(file, oldPath) {
+    this.clearUrlCache(this.vaultThumbnailCache);
     const newPath = file.path;
     const includeDescendants = file instanceof TFolder;
     let changed = false;
@@ -1026,6 +1543,7 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
   }
 
   async handleVaultDelete(file) {
+    this.clearUrlCache(this.vaultThumbnailCache);
     const deletedPath = file.path;
     const includeDescendants = file instanceof TFolder;
     let changed = false;
@@ -1062,16 +1580,29 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
     await this.refreshOpenViews();
   }
 
-  async activateView(replaceCurrentLeftLeaf = false) {
-    let leaf = null;
+  removeDuplicateViews() {
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL);
+    if (leaves.length <= 1) return 0;
 
-    if (replaceCurrentLeftLeaf) leaf = this.app.workspace.getLeftLeaf(false);
-
-    if (!leaf) {
-      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL)[0];
-      if (existing) leaf = existing;
+    // Folder Cover Wall is intentionally a single-instance sidebar view.
+    // Older builds could create one extra workspace leaf on every restart when
+    // automatic left-pane replacement was enabled. Keep the first restored
+    // leaf and detach only duplicate leaves created by that bug.
+    for (const leaf of leaves.slice(1)) {
+      try { leaf.detach(); } catch (_) {}
     }
+    return leaves.length - 1;
+  }
 
+  async activateView(replaceCurrentLeftLeaf = false) {
+    this.removeDuplicateViews();
+
+    // Always reuse an already restored Folder Cover Wall leaf first. This is
+    // important on application startup: replacing another left-sidebar leaf
+    // before checking the restored layout is what caused duplicate tab icons.
+    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL)[0] || null;
+
+    if (!leaf && replaceCurrentLeftLeaf) leaf = this.app.workspace.getLeftLeaf(false);
     if (!leaf) leaf = this.app.workspace.getLeftLeaf(false) || this.app.workspace.getLeftLeaf(true);
 
     if (!leaf) {
@@ -1079,7 +1610,9 @@ module.exports = class FolderCoverWallPlugin extends Plugin {
       return;
     }
 
-    await leaf.setViewState({ type: VIEW_TYPE_FOLDER_COVER_WALL, active: true });
+    if (leaf.getViewState().type !== VIEW_TYPE_FOLDER_COVER_WALL) {
+      await leaf.setViewState({ type: VIEW_TYPE_FOLDER_COVER_WALL, active: true });
+    }
     await this.app.workspace.revealLeaf(leaf);
   }
 

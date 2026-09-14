@@ -1,6 +1,8 @@
+# Folder Cover Wall
+
 By [Arebrodo](https://github.com/Arebrodo) · [中文说明](./README.zh-CN.md)
 
-Folder Cover Wall turns the left sidebar into a visual folder browser. Each folder is displayed as a large cover card, while notes and other files remain accessible inside the selected folder.
+Folder Cover Wall turns Obsidian's left sidebar into a visual folder browser. Each folder is displayed as a large cover card, while notes and other files remain accessible inside the selected folder.
 
 ![Folder Cover Wall screenshot](./assets/screenshot.png)
 
@@ -20,6 +22,7 @@ Folder Cover Wall turns the left sidebar into a visual folder browser. Each fold
 - Manage copied external cover images from plugin settings.
 - Remove unused external images and clean orphaned cover mappings.
 - Reuse the same stored external image across multiple folders without duplicating it.
+- Reduce cover-image memory use with optimized WebP thumbnails and lazy loading.
 
 ## Quick Start
 
@@ -30,6 +33,7 @@ Available commands:
 - **Folder Cover Wall: Open Folder Cover Wall**
 - **Folder Cover Wall: Replace current left sidebar view with Folder Cover Wall**
 - **Folder Cover Wall: Manage external cover storage**
+- **Folder Cover Wall: Optimize stored cover images**
 
 You can also enable **Replace left pane automatically** in the plugin settings if you want Folder Cover Wall to open automatically.
 
@@ -58,9 +62,27 @@ Folder Cover Wall chooses a cover in this order:
 3. The first image directly inside the folder, if enabled.
 4. A generated fallback cover.
 
+## Performance and memory use
+
+**v0.6.1:** fixes duplicate Folder Cover Wall sidebar tabs that could accumulate after repeated restarts. Existing duplicates are cleaned automatically on the next startup.
+
+
+Version 0.6.0 introduces a lower-memory cover pipeline designed for large image libraries.
+
+- External images are reduced to a configurable maximum resolution and converted to WebP before being stored.
+- Vault images can be rendered through temporary low-resolution WebP thumbnails without modifying the original files.
+- Cover images are prepared only when their cards are near the visible area.
+- Thumbnail generation is concurrency-limited to reduce temporary memory spikes.
+- A small bounded thumbnail cache is used instead of keeping an unlimited number of decoded cover images alive.
+- Cover image elements are released when the folder wall refreshes or closes.
+
+Default performance settings are designed for the sidebar and can be adjusted under **Settings → Folder Cover Wall → Performance**.
+
+Existing external cover images from earlier versions are automatically optimized when v0.6.0 is loaded for the first time.
+
 ## Rename-safe covers
 
-Since version 0.5.0, custom cover assignments automatically follow renamed folders.
+Custom cover assignments automatically follow renamed folders.
 
 If a parent folder is renamed, cover assignments for nested folders are migrated as well.
 
@@ -83,6 +105,8 @@ The storage manager lets you:
 - See how many external images are stored.
 - See the total embedded storage size.
 - See which folders use each image.
+- See optimized cover dimensions and source/storage sizes.
+- Optimize stored images for the current performance settings.
 - Remove individual stored images.
 - Remove unused external images.
 - Clean orphaned folder-cover mappings.
@@ -92,15 +116,13 @@ The same external image is stored only once, even when it is used by multiple fo
 
 ## External images and privacy
 
-External images are read locally and stored as embedded image data in the plugin's `data.json`.
+External images are read locally. The optimized cover copy is stored as embedded image data in the plugin's `data.json`.
 
 The plugin does **not** upload external images anywhere.
 
-Because the image data is embedded, moving or renaming the original image does not break the folder cover.
+Because a local optimized copy is stored, moving or renaming the original image does not break the folder cover.
 
-Very large source images can increase the size of `data.json`. The plugin displays a warning for images above approximately 12 MB.
-
-You can review and remove stored images at any time from the External Cover Storage manager.
+The original source image is not modified.
 
 ## Settings
 
@@ -114,6 +136,10 @@ Folder Cover Wall includes options for:
 - File visibility
 - Automatic use of the first image in a folder
 - Automatic left sidebar replacement
+- Maximum cover resolution
+- WebP cover quality
+- Temporary optimization of vault cover images
+- Lazy loading of cover images
 - External cover storage management
 
 ## Installation
@@ -142,7 +168,7 @@ manifest.json
 styles.css
 ```
 
-Reload the app, then enable **Folder Cover Wall** under Community plugins.
+Reload Obsidian, then enable **Folder Cover Wall** under Community plugins.
 
 ## Why I made this
 
@@ -194,7 +220,7 @@ See [RELEASING.md](./RELEASING.md).
 The repository includes a GitHub Actions workflow that can create a release automatically when you push a version tag such as:
 
 ```text
-0.5.0
+0.6.0
 ```
 
 ## License

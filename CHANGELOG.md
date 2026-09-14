@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.1
+
+### Fixed
+
+- Fixed duplicate Folder Cover Wall sidebar tabs accumulating after each application restart.
+- Reuse the restored Folder Cover Wall workspace leaf before replacing another left-sidebar leaf.
+- Automatically remove duplicate Folder Cover Wall leaves left behind by affected 0.6.0/earlier sessions.
+
+## 0.6.0
+
+- Added automatic WebP downscaling for newly imported external cover images.
+- Added automatic one-time optimization of external covers stored by earlier versions.
+- Added temporary optimized thumbnails for vault cover images without modifying the original files.
+- Added lazy cover loading based on viewport proximity.
+- Limited thumbnail-generation concurrency to reduce temporary memory spikes.
+- Added a bounded in-memory thumbnail/object-URL cache.
+- Cover image elements are explicitly released when the folder wall refreshes or closes.
+- Added configurable maximum cover resolution and WebP quality.
+- Added an **Optimize stored images** action and command.
+- External Cover Storage now shows optimized dimensions and source/storage sizes.
+
 ## 0.5.0
 
 - Folder cover assignments now follow folder renames automatically, including covers assigned to descendant folders.
