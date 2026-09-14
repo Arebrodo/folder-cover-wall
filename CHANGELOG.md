@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2
+
+- Fix Community Directory automated review error in the settings UI.
+- Use Obsidian's `Setting.setHeading()` API for the Performance section heading instead of creating an HTML heading directly.
+- No user-facing behavior changes.
+
 ## 0.6.1
 
 ### Fixed
