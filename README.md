@@ -2,7 +2,7 @@
 
 Folder Cover Wall turns Obsidian's sidebar into a visual folder browser. Each folder is represented by a large cover card, while notes and other files remain available inside the selected folder.
 
-![Folder Cover Wall screenshot](./assets/screenshot.png)
+![Folder Cover Wall screenshot](./screenshot.png)
 
 ## Features
 
