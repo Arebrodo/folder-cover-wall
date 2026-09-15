@@ -30,8 +30,8 @@ Folder Cover Wall 将 Obsidian 左侧边栏变成可视化文件夹浏览器。�
 
 可用命令：
 
-- **Folder Cover Wall: Open Folder Cover Wall**
-- **Folder Cover Wall: Replace current left sidebar view with Folder Cover Wall**
+- **Folder Cover Wall: Open cover wall**
+- **Folder Cover Wall: Replace current left sidebar view with cover wall**
 - **Folder Cover Wall: Manage external cover storage**
 - **Folder Cover Wall: Optimize stored cover images**
 

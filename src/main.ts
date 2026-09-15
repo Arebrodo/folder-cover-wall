@@ -15,6 +15,7 @@ import {
   normalizePath,
   setIcon,
   WorkspaceLeaf,
+  type SettingDefinitionItem,
 } from 'obsidian';
 
 const VIEW_TYPE_FOLDER_COVER_WALL = 'folder-cover-wall-view';
@@ -39,7 +40,7 @@ type CustomCover = string | VaultCoverRef | ExternalCoverRef;
 
 interface ExternalImageRecord {
   name: string;
-  mime: ImageMime | string;
+  mime: ImageMime;
   originalSize: number;
   storedSize?: number;
   width?: number;
@@ -99,7 +100,7 @@ interface OptimizedExternalImage extends OptimizedImage {
 
 interface ImageStoreInput {
   name: string;
-  mime: string;
+  mime: ImageMime;
   originalSize: number;
   storedSize?: number;
   width?: number;
@@ -136,7 +137,6 @@ interface ImageOptimizationResult {
 }
 
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
-const SUPPORTED_EXTERNAL_MIME_TYPES = new Set<ImageMime>(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_EXTERNAL_SOURCE_BYTES = 32 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -149,6 +149,12 @@ function isSupportedDataUrl(value: string): boolean {
 
 function isSupportedImageMime(value: string): value is ImageMime {
   return value === 'image/jpeg' || value === 'image/png' || value === 'image/webp';
+}
+
+function mimeFromDataUrl(dataUrl: string): ImageMime {
+  if (dataUrl.startsWith('data:image/jpeg;')) return 'image/jpeg';
+  if (dataUrl.startsWith('data:image/png;')) return 'image/png';
+  return 'image/webp';
 }
 
 function optionalFiniteNumber(value: unknown): number | undefined {
@@ -183,7 +189,9 @@ function parseCustomCover(value: unknown): CustomCover | null {
 function parseExternalImageRecord(value: unknown): ExternalImageRecord | null {
   if (!isRecord(value) || typeof value.dataUrl !== 'string' || !isSupportedDataUrl(value.dataUrl)) return null;
 
-  const mime = typeof value.mime === 'string' ? value.mime : 'image/webp';
+  const mime = typeof value.mime === 'string' && isSupportedImageMime(value.mime)
+    ? value.mime
+    : mimeFromDataUrl(value.dataUrl);
   return {
     name: typeof value.name === 'string' && value.name.length > 0 ? value.name : 'External image',
     mime,
@@ -356,7 +364,9 @@ async function decodeImageBlob(blob: Blob): Promise<DecodedImage> {
         height: bitmap.height,
         cleanup: () => bitmap.close(),
       };
-    } catch (_) {}
+    } catch {
+      // Fall back to the HTMLImageElement decoder below.
+    }
   }
 
   const url = URL.createObjectURL(blob);
@@ -515,7 +525,9 @@ class FolderCoverWallView extends ItemView {
       try {
         img.removeAttribute('src');
         img.src = '';
-      } catch (_) {}
+      } catch {
+      // Fall back to the HTMLImageElement decoder below.
+    }
     }
   }
 
@@ -528,7 +540,7 @@ class FolderCoverWallView extends ItemView {
         this.coverObserver?.unobserve(target);
         const source = this.pendingCoverSources.get(target);
         this.pendingCoverSources.delete(target);
-        if (source && target instanceof HTMLImageElement) void this.hydrateCoverImage(target, source);
+        if (source && target.instanceOf(HTMLImageElement)) void this.hydrateCoverImage(target, source);
       }
     }, { root: this.contentEl, rootMargin: '240px 0px', threshold: 0.01 });
   }
@@ -763,13 +775,17 @@ class FolderCoverWallView extends ItemView {
     if (!leaf || leaf === this.leaf) {
       try {
         leaf = this.app.workspace.getLeaf('tab');
-      } catch (_) {
+      } catch {
         leaf = this.app.workspace.getLeaf(true);
       }
     }
     if (!leaf) return;
     await leaf.openFile(file, { active: true });
-    try { await this.app.workspace.revealLeaf(leaf); } catch (_) {}
+    try {
+      this.app.workspace.revealLeaf(leaf);
+    } catch {
+      // The file is already open; revealing it is best-effort only.
+    }
   }
 
   createFileSection(container: HTMLElement, files: TFile[]): void {
@@ -946,7 +962,7 @@ class FolderCoverWallView extends ItemView {
       const grid = shell.createDiv({ cls: 'fcw-grid' });
       grid.style.setProperty('--fcw-card-min-width', `${this.plugin.pluginSettings.cardMinWidth}px`);
       for (const child of folderChildren) {
-        await this.createFolderCard(grid, child);
+        this.createFolderCard(grid, child);
       }
     }
 
@@ -1167,6 +1183,162 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  getControlValue(key: string): unknown {
+    if (key === 'coverMaxDimension') return String(this.plugin.pluginSettings.coverMaxDimension);
+    return this.plugin.pluginSettings[key as keyof FolderCoverWallSettings];
+  }
+
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    const settings = this.plugin.pluginSettings;
+    switch (key) {
+      case 'rootPath':
+        settings.rootPath = normalizePath(String(value ?? '').trim());
+        break;
+      case 'autoReplaceLeftPane':
+        settings.autoReplaceLeftPane = Boolean(value);
+        break;
+      case 'cardMinWidth':
+        settings.cardMinWidth = Number(value) || DEFAULT_SETTINGS.cardMinWidth;
+        break;
+      case 'cardAspectRatio':
+        settings.cardAspectRatio = String(value ?? '').trim() || DEFAULT_SETTINGS.cardAspectRatio;
+        break;
+      case 'autoUseFirstImage':
+        settings.autoUseFirstImage = Boolean(value);
+        break;
+      case 'showChildCount':
+        settings.showChildCount = Boolean(value);
+        break;
+      case 'showFileCount':
+        settings.showFileCount = Boolean(value);
+        break;
+      case 'showFiles':
+        settings.showFiles = Boolean(value);
+        break;
+      case 'coverFileNames':
+        settings.coverFileNames = String(value ?? '');
+        break;
+      case 'coverMaxDimension':
+        settings.coverMaxDimension = Number(value) || DEFAULT_SETTINGS.coverMaxDimension;
+        this.plugin.clearImageCaches();
+        break;
+      case 'coverWebpQuality':
+        settings.coverWebpQuality = Number(value) || DEFAULT_SETTINGS.coverWebpQuality;
+        this.plugin.clearImageCaches();
+        break;
+      case 'optimizeVaultCovers':
+        settings.optimizeVaultCovers = Boolean(value);
+        this.plugin.clearImageCaches();
+        break;
+      case 'lazyLoadCovers':
+        settings.lazyLoadCovers = Boolean(value);
+        break;
+      default:
+        return;
+    }
+
+    await this.plugin.saveSettings();
+    if (key !== 'autoReplaceLeftPane') await this.plugin.refreshOpenViews();
+  }
+
+  getSettingDefinitions(): SettingDefinitionItem<string>[] {
+    return [
+      {
+        name: 'Root folder',
+        desc: 'Leave empty to show the whole vault.',
+        control: { type: 'text', key: 'rootPath', placeholder: '' },
+      },
+      {
+        name: 'Replace left pane automatically',
+        desc: 'When the app finishes loading, show Folder Cover Wall in the current left sidebar leaf.',
+        control: { type: 'toggle', key: 'autoReplaceLeftPane' },
+      },
+      {
+        name: 'Card minimum width',
+        desc: 'Larger values create fewer, larger folder covers.',
+        control: { type: 'slider', key: 'cardMinWidth', min: 120, max: 360, step: 10 },
+      },
+      {
+        name: 'Card aspect ratio',
+        desc: 'Examples: 16 / 9, 4 / 3, 1 / 1, 3 / 4',
+        control: { type: 'text', key: 'cardAspectRatio' },
+      },
+      {
+        name: 'Automatically use first image in folder',
+        desc: 'If no custom cover or named cover image exists, use the first image directly inside that folder before falling back to a generated cover.',
+        control: { type: 'toggle', key: 'autoUseFirstImage' },
+      },
+      {
+        name: 'Show child-folder count',
+        control: { type: 'toggle', key: 'showChildCount' },
+      },
+      {
+        name: 'Show file count',
+        control: { type: 'toggle', key: 'showFileCount' },
+      },
+      {
+        name: 'Show notes and files',
+        desc: 'Show the files inside the current folder below the folder cover wall. Markdown notes appear first.',
+        control: { type: 'toggle', key: 'showFiles' },
+      },
+      {
+        name: 'Automatic cover file names',
+        desc: 'Comma-separated. If a folder contains one of these files, it becomes the cover automatically.',
+        control: { type: 'textarea', key: 'coverFileNames', rows: 3 },
+      },
+      {
+        type: 'group',
+        heading: 'Performance',
+        items: [
+          {
+            name: 'Maximum cover resolution',
+            desc: 'Images are reduced to this maximum width or height before being used as covers. 768 px is recommended for the sidebar.',
+            control: {
+              type: 'dropdown',
+              key: 'coverMaxDimension',
+              defaultValue: '768',
+              options: {
+                '512': '512 px',
+                '768': '768 px (recommended)',
+                '1024': '1024 px',
+                '1280': '1280 px',
+              },
+            },
+          },
+          {
+            name: 'WebP cover quality',
+            desc: 'Compression quality used for generated cover thumbnails. Lower values reduce storage and memory pressure.',
+            control: { type: 'slider', key: 'coverWebpQuality', min: 55, max: 95, step: 5 },
+          },
+          {
+            name: 'Optimize vault cover images in memory',
+            desc: 'Use temporary low-resolution WebP thumbnails for vault images instead of keeping full-resolution source images decoded in memory. Original files are never modified.',
+            control: { type: 'toggle', key: 'optimizeVaultCovers' },
+          },
+          {
+            name: 'Lazy-load cover images',
+            desc: 'Only prepare cover images when cards are near the visible area. Recommended for folders with many subfolders.',
+            control: { type: 'toggle', key: 'lazyLoadCovers' },
+          },
+          {
+            name: 'External cover storage',
+            desc: 'Review copied external images, storage usage, and orphaned mappings.',
+            render: (setting: Setting) => {
+              const storageImages = Object.values(this.plugin.pluginSettings.externalImages);
+              const storageBytes = storageImages.reduce((sum, image) => sum + this.plugin.externalImageStoredBytes(image), 0);
+              const orphanCount = this.plugin.getOrphanedCoverMappings().length;
+              setting
+                .setDesc(`${storageImages.length} copied image${storageImages.length === 1 ? '' : 's'} · ${formatBytes(storageBytes)} embedded${orphanCount ? ` · ${orphanCount} orphaned mapping${orphanCount === 1 ? '' : 's'}` : ''}`)
+                .addButton((button) => button
+                  .setButtonText('Manage')
+                  .onClick(() => new ExternalCoverManagerModal(this.app, this.plugin).open()));
+            },
+          },
+        ],
+      },
+    ];
+  }
+
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
@@ -1198,7 +1370,6 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
       .setDesc('Larger values create fewer, larger folder covers.')
       .addSlider((slider) => slider
         .setLimits(120, 360, 10)
-        .setDynamicTooltip()
         .setValue(this.plugin.pluginSettings.cardMinWidth)
         .onChange(async (value) => {
           this.plugin.pluginSettings.cardMinWidth = value;
@@ -1293,7 +1464,6 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
       .setDesc('Compression quality used for generated cover thumbnails. Lower values reduce storage and memory pressure.')
       .addSlider((slider) => slider
         .setLimits(55, 95, 5)
-        .setDynamicTooltip()
         .setValue(this.plugin.pluginSettings.coverWebpQuality)
         .onChange(async (value) => {
           this.plugin.pluginSettings.coverWebpQuality = value;
@@ -1362,14 +1532,14 @@ export default class FolderCoverWallPlugin extends Plugin {
     }));
 
     this.addCommand({
-      id: 'open-folder-cover-wall',
-      name: 'Open Folder Cover Wall',
+      id: 'open',
+      name: 'Open cover wall',
       callback: () => { void this.activateView(false); },
     });
 
     this.addCommand({
-      id: 'replace-left-file-browser-with-folder-cover-wall',
-      name: 'Replace current left sidebar view with Folder Cover Wall',
+      id: 'replace-left-file-browser',
+      name: 'Replace current left sidebar view with cover wall',
       callback: () => { void this.activateView(true); },
     });
 
@@ -1417,7 +1587,9 @@ export default class FolderCoverWallPlugin extends Plugin {
       if (typeof cover !== 'string' && cover.type === 'external' && cover.dataUrl) {
         const imageId = this.storeExternalImage({
           name: cover.name ?? 'External image',
-          mime: cover.mime ?? 'image/webp',
+          mime: typeof cover.mime === 'string' && isSupportedImageMime(cover.mime)
+            ? cover.mime
+            : mimeFromDataUrl(cover.dataUrl),
           originalSize: cover.size ?? estimateDataUrlBytes(cover.dataUrl),
           dataUrl: cover.dataUrl,
         });
@@ -1684,7 +1856,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     if (!this.pluginSettings.externalImages[imageId]) {
       this.pluginSettings.externalImages[imageId] = {
         name: image.name || 'External image',
-        mime: image.mime || 'image/webp',
+        mime: image.mime,
         originalSize: Number(image.originalSize) || estimateDataUrlBytes(image.dataUrl),
         storedSize: Number(image.storedSize) || estimateDataUrlBytes(image.dataUrl),
         width: Number(image.width) || undefined,
@@ -1859,7 +2031,11 @@ export default class FolderCoverWallPlugin extends Plugin {
     // automatic left-pane replacement was enabled. Keep the first restored
     // leaf and detach only duplicate leaves created by that bug.
     for (const leaf of leaves.slice(1)) {
-      try { leaf.detach(); } catch (_) {}
+      try {
+        leaf.detach();
+      } catch {
+        // Ignore leaves that were already detached by the workspace.
+      }
     }
     return leaves.length - 1;
   }
@@ -1883,7 +2059,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     if (leaf.getViewState().type !== VIEW_TYPE_FOLDER_COVER_WALL) {
       await leaf.setViewState({ type: VIEW_TYPE_FOLDER_COVER_WALL, active: true });
     }
-    await this.app.workspace.revealLeaf(leaf);
+    this.app.workspace.revealLeaf(leaf);
   }
 
   async refreshOpenViews(): Promise<void> {

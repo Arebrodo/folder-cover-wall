@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1
+
+- Cleaned Community Directory scan warnings in TypeScript and CSS.
+- Added dual-support declarative settings definitions for settings search on Obsidian 1.13+ while preserving legacy settings UI for older versions.
+- Replaced cross-window-unsafe DOM `instanceof` checks with Obsidian `instanceOf`.
+- Removed deprecated slider tooltip calls, redundant MIME typing, empty catch blocks, and an unnecessary `await`.
+- Simplified command IDs and names to follow Community Directory guidance.
+- Removed unnecessary `!important` declarations from plugin styles.
+
 ## 0.7.0
 
 ### Code quality and security hardening

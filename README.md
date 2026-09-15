@@ -30,8 +30,8 @@ After enabling the plugin, open **Folder Cover Wall** from the left sidebar or u
 
 Available commands:
 
-- **Folder Cover Wall: Open Folder Cover Wall**
-- **Folder Cover Wall: Replace current left sidebar view with Folder Cover Wall**
+- **Folder Cover Wall: Open cover wall**
+- **Folder Cover Wall: Replace current left sidebar view with cover wall**
 - **Folder Cover Wall: Manage external cover storage**
 - **Folder Cover Wall: Optimize stored cover images**
 
