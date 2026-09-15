@@ -621,7 +621,7 @@ class FolderCoverWallView extends obsidian_1.ItemView {
             return;
         await leaf.openFile(file, { active: true });
         try {
-            this.app.workspace.revealLeaf(leaf);
+            await this.app.workspace.revealLeaf(leaf);
         }
         catch (_b) {
             // The file is already open; revealing it is best-effort only.
@@ -1800,7 +1800,7 @@ class FolderCoverWallPlugin extends obsidian_1.Plugin {
         if (leaf.getViewState().type !== VIEW_TYPE_FOLDER_COVER_WALL) {
             await leaf.setViewState({ type: VIEW_TYPE_FOLDER_COVER_WALL, active: true });
         }
-        this.app.workspace.revealLeaf(leaf);
+        await this.app.workspace.revealLeaf(leaf);
     }
     async refreshOpenViews() {
         const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL);

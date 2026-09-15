@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.2
+
+- Await workspace reveal operations to satisfy the automated Promise-handling checks.
+- No intended user-facing behavior changes.
+
 ## 0.7.1
 
 - Cleaned Community Directory scan warnings in TypeScript and CSS.
