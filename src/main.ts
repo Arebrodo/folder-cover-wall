@@ -1,6 +1,6 @@
 // Folder Cover Wall source.
-// @ts-nocheck
 import {
+  App,
   FuzzySuggestModal,
   ItemView,
   Modal,
@@ -9,15 +9,246 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  TAbstractFile,
   TFile,
   TFolder,
   normalizePath,
   setIcon,
+  WorkspaceLeaf,
 } from 'obsidian';
 
 const VIEW_TYPE_FOLDER_COVER_WALL = 'folder-cover-wall-view';
 
-const DEFAULT_SETTINGS = {
+type ImageMime = 'image/jpeg' | 'image/png' | 'image/webp';
+
+interface VaultCoverRef {
+  type: 'vault';
+  path: string;
+}
+
+interface ExternalCoverRef {
+  type: 'external';
+  imageId?: string;
+  dataUrl?: string;
+  name?: string;
+  mime?: string;
+  size?: number;
+}
+
+type CustomCover = string | VaultCoverRef | ExternalCoverRef;
+
+interface ExternalImageRecord {
+  name: string;
+  mime: ImageMime | string;
+  originalSize: number;
+  storedSize?: number;
+  width?: number;
+  height?: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
+  optimizedVersion?: number;
+  optimizationMaxDimension?: number;
+  optimizationQuality?: number;
+  optimizedAt?: number;
+  dataUrl: string;
+  addedAt: number;
+}
+
+interface FolderCoverWallSettings {
+  rootPath: string;
+  autoReplaceLeftPane: boolean;
+  cardMinWidth: number;
+  cardAspectRatio: string;
+  showChildCount: boolean;
+  showFileCount: boolean;
+  showFiles: boolean;
+  autoUseFirstImage: boolean;
+  coverFileNames: string;
+  coverMaxDimension: number;
+  coverWebpQuality: number;
+  optimizeVaultCovers: boolean;
+  lazyLoadCovers: boolean;
+  customCovers: Record<string, CustomCover>;
+  externalImages: Record<string, ExternalImageRecord>;
+}
+
+interface UrlCacheEntry {
+  url: string;
+  bytes: number;
+}
+
+interface DecodedImage {
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+  cleanup: () => void;
+}
+
+interface OptimizedImage {
+  blob: Blob;
+  width: number;
+  height: number;
+  sourceWidth: number;
+  sourceHeight: number;
+}
+
+interface OptimizedExternalImage extends OptimizedImage {
+  dataUrl: string;
+  storedSize: number;
+}
+
+interface ImageStoreInput {
+  name: string;
+  mime: string;
+  originalSize: number;
+  storedSize?: number;
+  width?: number;
+  height?: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
+  optimizedVersion?: number;
+  optimizationMaxDimension?: number;
+  optimizationQuality?: number;
+  dataUrl: string;
+}
+
+type CoverSource =
+  | { kind: 'vault' | 'auto'; file: TFile; name: string }
+  | { kind: 'external'; imageId: string; name: string }
+  | { kind: 'inline'; dataUrl: string; name: string };
+
+interface OptimizationSummary {
+  optimized: number;
+  beforeBytes: number;
+  afterBytes: number;
+}
+
+interface CleanupSummary {
+  mappingsRemoved: number;
+  imagesRemoved: number;
+}
+
+interface ImageOptimizationResult {
+  beforeBytes: number;
+  afterBytes: number;
+  width: number;
+  height: number;
+}
+
+const SUPPORTED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
+const SUPPORTED_EXTERNAL_MIME_TYPES = new Set<ImageMime>(['image/jpeg', 'image/png', 'image/webp']);
+const MAX_EXTERNAL_SOURCE_BYTES = 32 * 1024 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isSupportedDataUrl(value: string): boolean {
+  return /^data:image\/(?:jpeg|png|webp);base64,/i.test(value);
+}
+
+function isSupportedImageMime(value: string): value is ImageMime {
+  return value === 'image/jpeg' || value === 'image/png' || value === 'image/webp';
+}
+
+function optionalFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function parseCustomCover(value: unknown): CustomCover | null {
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (!isRecord(value)) return null;
+
+  if (value.type === 'vault' && typeof value.path === 'string' && value.path.length > 0) {
+    return { type: 'vault', path: value.path };
+  }
+
+  if (value.type === 'external') {
+    const imageId = typeof value.imageId === 'string' && value.imageId.length > 0 ? value.imageId : undefined;
+    const dataUrl = typeof value.dataUrl === 'string' && isSupportedDataUrl(value.dataUrl) ? value.dataUrl : undefined;
+    if (!imageId && !dataUrl) return null;
+    return {
+      type: 'external',
+      imageId,
+      dataUrl,
+      name: typeof value.name === 'string' ? value.name : undefined,
+      mime: typeof value.mime === 'string' ? value.mime : undefined,
+      size: optionalFiniteNumber(value.size),
+    };
+  }
+
+  return null;
+}
+
+function parseExternalImageRecord(value: unknown): ExternalImageRecord | null {
+  if (!isRecord(value) || typeof value.dataUrl !== 'string' || !isSupportedDataUrl(value.dataUrl)) return null;
+
+  const mime = typeof value.mime === 'string' ? value.mime : 'image/webp';
+  return {
+    name: typeof value.name === 'string' && value.name.length > 0 ? value.name : 'External image',
+    mime,
+    originalSize: optionalFiniteNumber(value.originalSize) ?? estimateDataUrlBytes(value.dataUrl),
+    storedSize: optionalFiniteNumber(value.storedSize),
+    width: optionalFiniteNumber(value.width),
+    height: optionalFiniteNumber(value.height),
+    sourceWidth: optionalFiniteNumber(value.sourceWidth),
+    sourceHeight: optionalFiniteNumber(value.sourceHeight),
+    optimizedVersion: optionalFiniteNumber(value.optimizedVersion),
+    optimizationMaxDimension: optionalFiniteNumber(value.optimizationMaxDimension),
+    optimizationQuality: optionalFiniteNumber(value.optimizationQuality),
+    optimizedAt: optionalFiniteNumber(value.optimizedAt),
+    dataUrl: value.dataUrl,
+    addedAt: optionalFiniteNumber(value.addedAt) ?? Date.now(),
+  };
+}
+
+function parseStoredSettings(raw: unknown): FolderCoverWallSettings {
+  const source = isRecord(raw) ? raw : {};
+  const customCovers: Record<string, CustomCover> = {};
+  const externalImages: Record<string, ExternalImageRecord> = {};
+
+  if (isRecord(source.customCovers)) {
+    for (const [folderPath, rawCover] of Object.entries(source.customCovers)) {
+      const cover = parseCustomCover(rawCover);
+      if (cover) customCovers[folderPath] = cover;
+    }
+  }
+
+  if (isRecord(source.externalImages)) {
+    for (const [imageId, rawImage] of Object.entries(source.externalImages)) {
+      const image = parseExternalImageRecord(rawImage);
+      if (image) externalImages[imageId] = image;
+    }
+  }
+
+  const numberOr = (key: string, fallback: number): number =>
+    optionalFiniteNumber(source[key]) ?? fallback;
+  const booleanOr = (key: string, fallback: boolean): boolean =>
+    typeof source[key] === 'boolean' ? source[key] : fallback;
+  const stringOr = (key: string, fallback: string): string =>
+    typeof source[key] === 'string' ? source[key] : fallback;
+
+  return {
+    rootPath: stringOr('rootPath', DEFAULT_SETTINGS.rootPath),
+    autoReplaceLeftPane: booleanOr('autoReplaceLeftPane', DEFAULT_SETTINGS.autoReplaceLeftPane),
+    cardMinWidth: numberOr('cardMinWidth', DEFAULT_SETTINGS.cardMinWidth),
+    cardAspectRatio: stringOr('cardAspectRatio', DEFAULT_SETTINGS.cardAspectRatio),
+    showChildCount: booleanOr('showChildCount', DEFAULT_SETTINGS.showChildCount),
+    showFileCount: booleanOr('showFileCount', DEFAULT_SETTINGS.showFileCount),
+    showFiles: booleanOr('showFiles', DEFAULT_SETTINGS.showFiles),
+    autoUseFirstImage: booleanOr('autoUseFirstImage', DEFAULT_SETTINGS.autoUseFirstImage),
+    coverFileNames: stringOr('coverFileNames', DEFAULT_SETTINGS.coverFileNames),
+    coverMaxDimension: numberOr('coverMaxDimension', DEFAULT_SETTINGS.coverMaxDimension),
+    coverWebpQuality: numberOr('coverWebpQuality', DEFAULT_SETTINGS.coverWebpQuality),
+    optimizeVaultCovers: booleanOr('optimizeVaultCovers', DEFAULT_SETTINGS.optimizeVaultCovers),
+    lazyLoadCovers: booleanOr('lazyLoadCovers', DEFAULT_SETTINGS.lazyLoadCovers),
+    customCovers,
+    externalImages,
+  };
+}
+
+
+const DEFAULT_SETTINGS: FolderCoverWallSettings = {
   rootPath: '',
   autoReplaceLeftPane: false,
   cardMinWidth: 180,
@@ -35,16 +266,16 @@ const DEFAULT_SETTINGS = {
   externalImages: {},
 };
 
-function imageExtensions() {
-  return new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg']);
+function imageExtensions(): ReadonlySet<string> {
+  return SUPPORTED_IMAGE_EXTENSIONS;
 }
 
-function isImageFile(file) {
+function isImageFile(file: TAbstractFile | null): file is TFile {
   return file instanceof TFile && imageExtensions().has((file.extension || '').toLowerCase());
 }
 
 
-function formatBytes(bytes) {
+function formatBytes(bytes: number): string {
   const value = Number(bytes) || 0;
   if (value < 1024) return `${value} B`;
   const units = ['KB', 'MB', 'GB'];
@@ -57,7 +288,7 @@ function formatBytes(bytes) {
   return `${size >= 10 ? size.toFixed(1) : size.toFixed(2)} ${unit}`;
 }
 
-function estimateDataUrlBytes(dataUrl) {
+function estimateDataUrlBytes(dataUrl: string): number {
   if (typeof dataUrl !== 'string') return 0;
   const comma = dataUrl.indexOf(',');
   if (comma < 0) return dataUrl.length;
@@ -67,7 +298,7 @@ function estimateDataUrlBytes(dataUrl) {
   return Math.max(0, Math.floor(payload.length * 3 / 4) - padding);
 }
 
-function hashText(text) {
+function hashText(text: string): string {
   let h1 = 0x811c9dc5;
   let h2 = 0x9e3779b9;
   for (let i = 0; i < text.length; i++) {
@@ -80,19 +311,17 @@ function hashText(text) {
   return `${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}${text.length.toString(36)}`;
 }
 
-function mimeFromName(name) {
+function mimeFromName(name: string): ImageMime | 'application/octet-stream' {
   const ext = String(name || '').split('.').pop()?.toLowerCase();
   if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
   if (ext === 'png') return 'image/png';
   if (ext === 'webp') return 'image/webp';
-  if (ext === 'gif') return 'image/gif';
-  if (ext === 'bmp') return 'image/bmp';
-  if (ext === 'svg') return 'image/svg+xml';
   return 'application/octet-stream';
 }
 
-function dataUrlToBlob(dataUrl) {
-  const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(String(dataUrl || ''));
+function dataUrlToBlob(dataUrl: string): Blob {
+  if (!isSupportedDataUrl(dataUrl)) throw new Error('Unsupported image data URL.');
+  const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(dataUrl);
   if (!match) throw new Error('Invalid image data URL.');
   const mime = match[1] || 'application/octet-stream';
   const isBase64 = Boolean(match[2]);
@@ -106,7 +335,7 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: mime });
 }
 
-function blobToDataUrl(blob) {
+function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => typeof reader.result === 'string'
@@ -117,7 +346,7 @@ function blobToDataUrl(blob) {
   });
 }
 
-async function decodeImageBlob(blob) {
+async function decodeImageBlob(blob: Blob): Promise<DecodedImage> {
   if (typeof createImageBitmap === 'function') {
     try {
       const bitmap = await createImageBitmap(blob);
@@ -132,7 +361,7 @@ async function decodeImageBlob(blob) {
 
   const url = URL.createObjectURL(blob);
   try {
-    const image = new Image();
+    const image = createEl('img');
     image.decoding = 'async';
     await new Promise((resolve, reject) => {
       image.onload = resolve;
@@ -154,7 +383,7 @@ async function decodeImageBlob(blob) {
   }
 }
 
-async function optimizeBlobToWebp(blob, maxDimension = 768, qualityPercent = 80) {
+async function optimizeBlobToWebp(blob: Blob, maxDimension = 768, qualityPercent = 80): Promise<OptimizedImage> {
   const decoded = await decodeImageBlob(blob);
   const sourceWidth = Math.max(1, Number(decoded.width) || 1);
   const sourceHeight = Math.max(1, Number(decoded.height) || 1);
@@ -165,7 +394,7 @@ async function optimizeBlobToWebp(blob, maxDimension = 768, qualityPercent = 80)
   const height = Math.max(1, Math.round(sourceHeight * scale));
   const quality = Math.min(0.95, Math.max(0.45, (Number(qualityPercent) || 80) / 100));
 
-  const canvas = document.createElement('canvas');
+  const canvas = createEl('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d', { alpha: true });
@@ -178,7 +407,7 @@ async function optimizeBlobToWebp(blob, maxDimension = 768, qualityPercent = 80)
   ctx.drawImage(decoded.source, 0, 0, width, height);
 
   try {
-    let output = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
+    let output = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
     if (!output) {
       const fallbackUrl = canvas.toDataURL('image/webp', quality);
       output = dataUrlToBlob(fallbackUrl);
@@ -198,7 +427,7 @@ async function optimizeBlobToWebp(blob, maxDimension = 768, qualityPercent = 80)
   }
 }
 
-function rewritePath(path, oldPath, newPath, includeDescendants) {
+function rewritePath(path: string, oldPath: string, newPath: string, includeDescendants: boolean): string {
   if (typeof path !== 'string' || !path) return path;
   if (path === oldPath) return newPath;
   if (includeDescendants && path.startsWith(`${oldPath}/`)) {
@@ -207,7 +436,7 @@ function rewritePath(path, oldPath, newPath, includeDescendants) {
   return path;
 }
 
-function stableHue(text) {
+function stableHue(text: string): number {
   let hash = 0;
   for (let i = 0; i < text.length; i++) {
     hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
@@ -215,66 +444,74 @@ function stableHue(text) {
   return Math.abs(hash) % 360;
 }
 
-class ImageFileSuggestModal extends FuzzySuggestModal {
-  constructor(app, onChoose) {
+class ImageFileSuggestModal extends FuzzySuggestModal<TFile> {
+  private readonly onChoose: (file: TFile) => void | Promise<void>;
+
+  constructor(app: App, onChoose: (file: TFile) => void | Promise<void>) {
     super(app);
     this.onChoose = onChoose;
     this.setPlaceholder('Choose an image from this vault…');
   }
 
-  getItems() {
+  getItems(): TFile[] {
     return this.app.vault.getFiles().filter(isImageFile);
   }
 
-  getItemText(file) {
+  getItemText(file: TFile): string {
     return file.path;
   }
 
-  onChooseItem(file) {
-    this.onChoose(file);
+  onChooseItem(file: TFile, _evt: MouseEvent | KeyboardEvent): void {
+    void this.onChoose(file);
   }
 }
 
 class FolderCoverWallView extends ItemView {
-  constructor(leaf, plugin) {
+  private readonly plugin: FolderCoverWallPlugin;
+  currentPath: string;
+  private readonly boundRefresh: () => void;
+  private coverObserver: IntersectionObserver | null;
+  private pendingCoverSources: WeakMap<Element, CoverSource>;
+
+  constructor(leaf: WorkspaceLeaf, plugin: FolderCoverWallPlugin) {
     super(leaf);
     this.plugin = plugin;
     this.currentPath = plugin.pluginSettings.rootPath || '';
-    this.boundRefresh = () => this.refresh();
+    this.boundRefresh = () => { void this.refresh(); };
     this.coverObserver = null;
     this.pendingCoverSources = new WeakMap();
   }
 
-  getViewType() {
+  getViewType(): string {
     return VIEW_TYPE_FOLDER_COVER_WALL;
   }
 
-  getDisplayText() {
+  getDisplayText(): string {
     return 'Folder Cover Wall';
   }
 
-  getIcon() {
+  getIcon(): string {
     return 'layout-grid';
   }
 
-  async onOpen() {
+  async onOpen(): Promise<void> {
     this.contentEl.addClass('fcw-view');
     this.registerEvent(this.app.vault.on('create', this.boundRefresh));
     await this.refresh();
   }
 
-  async onClose() {
+  async onClose(): Promise<void> {
     this.releaseRenderedCovers();
     this.contentEl.empty();
   }
 
-  releaseRenderedCovers() {
+  releaseRenderedCovers(): void {
     if (this.coverObserver) {
       this.coverObserver.disconnect();
       this.coverObserver = null;
     }
     this.pendingCoverSources = new WeakMap();
-    for (const img of this.contentEl.querySelectorAll('img.fcw-cover-image')) {
+    for (const img of this.contentEl.querySelectorAll<HTMLImageElement>('img.fcw-cover-image')) {
       try {
         img.removeAttribute('src');
         img.src = '';
@@ -282,21 +519,21 @@ class FolderCoverWallView extends ItemView {
     }
   }
 
-  ensureCoverObserver() {
+  ensureCoverObserver(): void {
     if (this.coverObserver || !this.plugin.pluginSettings.lazyLoadCovers || typeof IntersectionObserver === 'undefined') return;
     this.coverObserver = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
-        const img = entry.target;
-        this.coverObserver?.unobserve(img);
-        const source = this.pendingCoverSources.get(img);
-        this.pendingCoverSources.delete(img);
-        if (source) void this.hydrateCoverImage(img, source);
+        const target = entry.target;
+        this.coverObserver?.unobserve(target);
+        const source = this.pendingCoverSources.get(target);
+        this.pendingCoverSources.delete(target);
+        if (source && target instanceof HTMLImageElement) void this.hydrateCoverImage(target, source);
       }
     }, { root: this.contentEl, rootMargin: '240px 0px', threshold: 0.01 });
   }
 
-  scheduleCoverImage(img, source) {
+  scheduleCoverImage(img: HTMLImageElement, source: CoverSource | null): void {
     if (!source) return;
     if (!this.plugin.pluginSettings.lazyLoadCovers || typeof IntersectionObserver === 'undefined') {
       void this.hydrateCoverImage(img, source);
@@ -307,7 +544,7 @@ class FolderCoverWallView extends ItemView {
     this.coverObserver?.observe(img);
   }
 
-  async hydrateCoverImage(img, source) {
+  async hydrateCoverImage(img: HTMLImageElement, source: CoverSource): Promise<void> {
     try {
       img.classList.add('is-loading');
       const resolved = await this.plugin.resolveCoverDisplayUrl(source);
@@ -321,18 +558,18 @@ class FolderCoverWallView extends ItemView {
     }
   }
 
-  resolveFolder(path) {
+  resolveFolder(path: string): TFolder | null {
     const normalized = normalizePath(path || '');
     if (!normalized) return this.app.vault.getRoot();
     const target = this.app.vault.getAbstractFileByPath(normalized);
     return target instanceof TFolder ? target : null;
   }
 
-  rootFolder() {
+  rootFolder(): TFolder {
     return this.resolveFolder(this.plugin.pluginSettings.rootPath) || this.app.vault.getRoot();
   }
 
-  ensurePathInsideRoot(path) {
+  ensurePathInsideRoot(path: string): string {
     const root = this.rootFolder();
     if (!root || root.path === '/') return path;
     if (!path) return root.path;
@@ -340,12 +577,12 @@ class FolderCoverWallView extends ItemView {
     return root.path;
   }
 
-  async navigate(path) {
+  async navigate(path: string): Promise<void> {
     this.currentPath = this.ensurePathInsideRoot(path);
     await this.refresh();
   }
 
-  countFolder(folder) {
+  countFolder(folder: TFolder): { folders: number; files: number } {
     let folders = 0;
     let files = 0;
     for (const child of folder.children) {
@@ -355,7 +592,7 @@ class FolderCoverWallView extends ItemView {
     return { folders, files };
   }
 
-  findCoverSource(folder) {
+  findCoverSource(folder: TFolder): CoverSource | null {
     const custom = this.plugin.pluginSettings.customCovers[folder.path];
 
     // Backward compatibility with v0.1-v0.3, where a custom cover was stored
@@ -410,14 +647,24 @@ class FolderCoverWallView extends ItemView {
     return null;
   }
 
-  async chooseExternalCover(folder) {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
+  chooseExternalCover(folder: TFolder): void {
+    const input = createEl('input', { type: 'file' });
+    input.accept = 'image/jpeg,image/png,image/webp';
 
-    input.addEventListener('change', async () => {
-      const file = input.files && input.files[0];
+    input.addEventListener('change', () => {
+      void (async () => {
+      const file = input.files?.[0];
       if (!file) return;
+      if (file.size > MAX_EXTERNAL_SOURCE_BYTES) {
+        new Notice(`Image is too large. Choose a file smaller than ${formatBytes(MAX_EXTERNAL_SOURCE_BYTES)}.`);
+        input.value = '';
+        return;
+      }
+      if (!isSupportedImageMime(file.type)) {
+        new Notice('Unsupported image format. Use JPEG, PNG, or WebP.');
+        input.value = '';
+        return;
+      }
 
       try {
         new Notice('Optimizing cover image…');
@@ -447,12 +694,13 @@ class FolderCoverWallView extends ItemView {
       } finally {
         input.value = '';
       }
+      })();
     }, { once: true });
 
     input.click();
   }
 
-  createToolbar(container, folder) {
+  createToolbar(container: HTMLElement, folder: TFolder): void {
     const toolbar = container.createDiv({ cls: 'fcw-toolbar' });
 
     const backButton = toolbar.createEl('button', {
@@ -464,10 +712,10 @@ class FolderCoverWallView extends ItemView {
     const root = this.rootFolder();
     const atRoot = !folder || folder.path === root.path;
     backButton.disabled = atRoot;
-    backButton.addEventListener('click', async () => {
-      if (!folder || !folder.parent || atRoot) return;
+    backButton.addEventListener('click', () => {
+      if (!folder.parent || atRoot) return;
       const parentPath = folder.parent.path === '/' ? '' : folder.parent.path;
-      await this.navigate(parentPath);
+      void this.navigate(parentPath);
     });
 
     const location = toolbar.createDiv({
@@ -480,13 +728,13 @@ class FolderCoverWallView extends ItemView {
     location.createDiv({ cls: 'fcw-location-name', text: locationName });
     if (!atRoot) {
       location.createDiv({ cls: 'fcw-location-hint', text: 'Click to return to root' });
-      location.addEventListener('click', () => this.navigate(root.path === '/' ? '' : root.path));
+      location.addEventListener('click', () => { void this.navigate(root.path === '/' ? '' : root.path); });
       location.setAttribute('role', 'button');
       location.setAttribute('tabindex', '0');
       location.addEventListener('keydown', (evt) => {
         if (evt.key === 'Enter' || evt.key === ' ') {
           evt.preventDefault();
-          this.navigate(root.path === '/' ? '' : root.path);
+          void this.navigate(root.path === '/' ? '' : root.path);
         }
       });
     }
@@ -496,10 +744,10 @@ class FolderCoverWallView extends ItemView {
       attr: { 'aria-label': 'Refresh folder wall', type: 'button' },
     });
     setIcon(refreshButton, 'refresh-cw');
-    refreshButton.addEventListener('click', () => this.refresh());
+    refreshButton.addEventListener('click', () => { void this.refresh(); });
   }
 
-  fileIconName(file) {
+  fileIconName(file: TFile): string {
     const ext = (file.extension || '').toLowerCase();
     if (ext === 'md') return 'file-text';
     if (ext === 'canvas') return 'layout-dashboard';
@@ -508,7 +756,7 @@ class FolderCoverWallView extends ItemView {
     return 'file';
   }
 
-  async openFile(file) {
+  async openFile(file: TFile): Promise<void> {
     let leaf = null;
     const markdownLeaves = this.app.workspace.getLeavesOfType('markdown');
     if (markdownLeaves && markdownLeaves.length) leaf = markdownLeaves[0];
@@ -524,7 +772,7 @@ class FolderCoverWallView extends ItemView {
     try { await this.app.workspace.revealLeaf(leaf); } catch (_) {}
   }
 
-  createFileSection(container, files) {
+  createFileSection(container: HTMLElement, files: TFile[]): void {
     if (!this.plugin.pluginSettings.showFiles || !files.length) return;
 
     const section = container.createDiv({ cls: 'fcw-files-section' });
@@ -547,8 +795,8 @@ class FolderCoverWallView extends ItemView {
         text.createDiv({ cls: 'fcw-file-ext', text: file.extension.toUpperCase() });
       }
 
-      const open = () => this.openFile(file);
-      row.addEventListener('click', open);
+      const open = (): void => { void this.openFile(file); };
+      row.addEventListener('click', () => open());
       row.addEventListener('keydown', (evt) => {
         if (evt.key === 'Enter' || evt.key === ' ') {
           evt.preventDefault();
@@ -558,7 +806,7 @@ class FolderCoverWallView extends ItemView {
     }
   }
 
-  async createFolderCard(grid, folder) {
+  createFolderCard(grid: HTMLElement, folder: TFolder): void {
     // Deliberately use a div instead of a button. Some Obsidian themes impose
     // fixed heights on generic buttons, which clipped the original v0.1 cards.
     const card = grid.createDiv({
@@ -602,12 +850,12 @@ class FolderCoverWallView extends ItemView {
     if (this.plugin.pluginSettings.showFileCount) metaParts.push(`${counts.files} files`);
     if (metaParts.length) overlay.createDiv({ cls: 'fcw-card-meta', text: metaParts.join(' · ') });
 
-    const open = async () => this.navigate(folder.path);
-    card.addEventListener('click', open);
-    card.addEventListener('keydown', async (evt) => {
+    const open = (): void => { void this.navigate(folder.path); };
+    card.addEventListener('click', () => open());
+    card.addEventListener('keydown', (evt) => {
       if (evt.key === 'Enter' || evt.key === ' ') {
         evt.preventDefault();
-        await open();
+        open();
       }
     });
 
@@ -618,7 +866,7 @@ class FolderCoverWallView extends ItemView {
     });
   }
 
-  openFolderMenu(evt, folder) {
+  openFolderMenu(evt: MouseEvent, folder: TFolder): void {
     const menu = new Menu();
 
     menu.addItem((item) => {
@@ -641,24 +889,26 @@ class FolderCoverWallView extends ItemView {
 
     if (this.plugin.pluginSettings.customCovers[folder.path]) {
       menu.addItem((item) => {
-        item.setTitle('Clear custom cover').setIcon('x').onClick(async () => {
-          delete this.plugin.pluginSettings.customCovers[folder.path];
-          this.plugin.cleanupUnusedExternalImages();
-          await this.plugin.saveSettings();
-          await this.refresh();
+        item.setTitle('Clear custom cover').setIcon('x').onClick(() => {
+          void (async () => {
+            delete this.plugin.pluginSettings.customCovers[folder.path];
+            this.plugin.cleanupUnusedExternalImages();
+            await this.plugin.saveSettings();
+            await this.refresh();
+          })();
         });
       });
     }
 
     menu.addSeparator();
     menu.addItem((item) => {
-      item.setTitle('Open folder').setIcon('folder-open').onClick(() => this.navigate(folder.path));
+      item.setTitle('Open folder').setIcon('folder-open').onClick(() => { void this.navigate(folder.path); });
     });
 
     menu.showAtMouseEvent(evt);
   }
 
-  async refresh() {
+  async refresh(): Promise<void> {
     if (!this.contentEl) return;
     this.releaseRenderedCovers();
     this.contentEl.empty();
@@ -672,11 +922,11 @@ class FolderCoverWallView extends ItemView {
     this.createToolbar(shell, folder);
 
     const folderChildren = folder.children
-      .filter((child) => child instanceof TFolder)
+      .filter((child): child is TFolder => child instanceof TFolder)
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
 
     const files = folder.children
-      .filter((child) => child instanceof TFile)
+      .filter((child): child is TFile => child instanceof TFile)
       .filter((file) => {
         const lower = file.name.toLowerCase();
         const coverNames = this.plugin.pluginSettings.coverFileNames
@@ -714,7 +964,18 @@ class FolderCoverWallView extends ItemView {
 }
 
 class ConfirmActionModal extends Modal {
-  constructor(app, title, message, confirmLabel, onConfirm) {
+  private readonly titleText: string;
+  private readonly message: string;
+  private readonly confirmLabel: string;
+  private readonly onConfirm: () => void | Promise<void>;
+
+  constructor(
+    app: App,
+    title: string,
+    message: string,
+    confirmLabel: string,
+    onConfirm: () => void | Promise<void>,
+  ) {
     super(app);
     this.titleText = title;
     this.message = message;
@@ -722,10 +983,10 @@ class ConfirmActionModal extends Modal {
     this.onConfirm = onConfirm;
   }
 
-  onOpen() {
+  onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h2', { text: this.titleText });
+    this.setTitle(this.titleText);
     contentEl.createEl('p', { text: this.message });
     const actions = contentEl.createDiv({ cls: 'fcw-manager-actions' });
     const cancel = actions.createEl('button', { text: 'Cancel', attr: { type: 'button' } });
@@ -735,32 +996,36 @@ class ConfirmActionModal extends Modal {
       cls: 'mod-warning',
       attr: { type: 'button' },
     });
-    confirm.addEventListener('click', async () => {
-      await this.onConfirm();
-      this.close();
+    confirm.addEventListener('click', () => {
+      void (async () => {
+        await this.onConfirm();
+        this.close();
+      })();
     });
   }
 
-  onClose() {
+  onClose(): void {
     this.contentEl.empty();
   }
 }
 
 class ExternalCoverManagerModal extends Modal {
-  constructor(app, plugin) {
+  private readonly plugin: FolderCoverWallPlugin;
+
+  constructor(app: App, plugin: FolderCoverWallPlugin) {
     super(app);
     this.plugin = plugin;
   }
 
-  onOpen() {
+  onOpen(): void {
+    this.setTitle('External cover storage');
     this.render();
   }
 
-  render() {
+  render(): void {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass('fcw-manager-modal');
-    contentEl.createEl('h2', { text: 'External cover storage' });
     contentEl.createEl('p', {
       cls: 'setting-item-description',
       text: 'External images are copied into the plugin data so covers keep working if the original files are moved. Manage those stored copies here.',
@@ -777,7 +1042,8 @@ class ExternalCoverManagerModal extends Modal {
 
     const actions = contentEl.createDiv({ cls: 'fcw-manager-actions' });
     const optimizeStored = actions.createEl('button', { text: 'Optimize stored images', attr: { type: 'button' } });
-    optimizeStored.addEventListener('click', async () => {
+    optimizeStored.addEventListener('click', () => {
+      void (async () => {
       optimizeStored.disabled = true;
       optimizeStored.textContent = 'Optimizing…';
       const result = await this.plugin.optimizeAllExternalImages();
@@ -786,18 +1052,22 @@ class ExternalCoverManagerModal extends Modal {
         ? `Optimized ${result.optimized} stored cover${result.optimized === 1 ? '' : 's'} and saved ${formatBytes(saved)}.`
         : 'Stored covers are already optimized for the current settings.');
       this.render();
+      })();
     });
 
     const cleanUnused = actions.createEl('button', { text: 'Remove unused images', attr: { type: 'button' } });
-    cleanUnused.addEventListener('click', async () => {
+    cleanUnused.addEventListener('click', () => {
+      void (async () => {
       const removed = this.plugin.cleanupUnusedExternalImages();
       if (removed > 0) await this.plugin.saveSettings();
       new Notice(removed ? `Removed ${removed} unused image${removed === 1 ? '' : 's'}.` : 'No unused external images found.');
       this.render();
+      })();
     });
 
     const cleanOrphans = actions.createEl('button', { text: 'Clean orphaned mappings', attr: { type: 'button' } });
-    cleanOrphans.addEventListener('click', async () => {
+    cleanOrphans.addEventListener('click', () => {
+      void (async () => {
       const result = this.plugin.cleanupOrphanedCoverMappings();
       if (result.mappingsRemoved || result.imagesRemoved) await this.plugin.saveSettings();
       new Notice(result.mappingsRemoved
@@ -805,6 +1075,7 @@ class ExternalCoverManagerModal extends Modal {
         : 'No orphaned folder cover mappings found.');
       await this.plugin.refreshOpenViews();
       this.render();
+      })();
     });
 
     if (images.length) {
@@ -883,18 +1154,20 @@ class ExternalCoverManagerModal extends Modal {
     }
   }
 
-  onClose() {
+  onClose(): void {
     this.contentEl.empty();
   }
 }
 
 class FolderCoverWallSettingTab extends PluginSettingTab {
-  constructor(app, plugin) {
+  private readonly plugin: FolderCoverWallPlugin;
+
+  constructor(app: App, plugin: FolderCoverWallPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
 
-  display() {
+  display(): void {
     const { containerEl } = this;
     containerEl.empty();
 
@@ -907,7 +1180,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.pluginSettings.rootPath = normalizePath(value.trim());
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -930,7 +1203,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.pluginSettings.cardMinWidth = value;
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -941,7 +1214,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.pluginSettings.cardAspectRatio = value.trim() || '16 / 9';
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -952,7 +1225,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.pluginSettings.autoUseFirstImage = value;
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -962,7 +1235,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.pluginSettings.showChildCount = value;
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -972,7 +1245,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.pluginSettings.showFileCount = value;
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -983,7 +1256,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.pluginSettings.showFiles = value;
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -994,7 +1267,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.pluginSettings.coverFileNames = value;
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl).setName('Performance').setHeading();
@@ -1012,7 +1285,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
           this.plugin.pluginSettings.coverMaxDimension = Number(value) || 768;
           this.plugin.clearImageCaches();
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -1026,7 +1299,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
           this.plugin.pluginSettings.coverWebpQuality = value;
           this.plugin.clearImageCaches();
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -1038,7 +1311,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
           this.plugin.pluginSettings.optimizeVaultCovers = value;
           this.plugin.clearImageCaches();
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     new Setting(containerEl)
@@ -1049,7 +1322,7 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.pluginSettings.lazyLoadCovers = value;
           await this.plugin.saveSettings();
-          this.plugin.refreshOpenViews();
+          await this.plugin.refreshOpenViews();
         }));
 
     const storageImages = Object.values(this.plugin.pluginSettings.externalImages || {});
@@ -1065,12 +1338,14 @@ class FolderCoverWallSettingTab extends PluginSettingTab {
 }
 
 export default class FolderCoverWallPlugin extends Plugin {
-  async onload() {
-    this.vaultThumbnailCache = new Map();
-    this.externalObjectUrlCache = new Map();
-    this.thumbnailTasks = new Map();
-    this.thumbnailActive = 0;
-    this.thumbnailQueue = [];
+  pluginSettings: FolderCoverWallSettings = { ...DEFAULT_SETTINGS, customCovers: {}, externalImages: {} };
+  private vaultThumbnailCache = new Map<string, UrlCacheEntry>();
+  private externalObjectUrlCache = new Map<string, UrlCacheEntry>();
+  private thumbnailTasks = new Map<string, Promise<string>>();
+  private thumbnailActive = 0;
+  private readonly thumbnailQueue: Array<() => void> = [];
+
+  async onload(): Promise<void> {
     await this.loadSettings();
     const migrationResult = await this.optimizeLegacyExternalImages();
     if (migrationResult.optimized > 0) {
@@ -1089,13 +1364,13 @@ export default class FolderCoverWallPlugin extends Plugin {
     this.addCommand({
       id: 'open-folder-cover-wall',
       name: 'Open Folder Cover Wall',
-      callback: () => this.activateView(false),
+      callback: () => { void this.activateView(false); },
     });
 
     this.addCommand({
       id: 'replace-left-file-browser-with-folder-cover-wall',
       name: 'Replace current left sidebar view with Folder Cover Wall',
-      callback: () => this.activateView(true),
+      callback: () => { void this.activateView(true); },
     });
 
     this.addCommand({
@@ -1127,30 +1402,23 @@ export default class FolderCoverWallPlugin extends Plugin {
     });
   }
 
-  onunload() {
+  onunload(): void {
     this.clearImageCaches();
   }
 
-  async loadSettings() {
-    this.pluginSettings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    if (!this.pluginSettings.customCovers) this.pluginSettings.customCovers = {};
-    if (!this.pluginSettings.externalImages) this.pluginSettings.externalImages = {};
-    if (typeof this.pluginSettings.autoUseFirstImage !== 'boolean') this.pluginSettings.autoUseFirstImage = true;
-    if (typeof this.pluginSettings.showFiles !== 'boolean') this.pluginSettings.showFiles = true;
-    if (!Number.isFinite(this.pluginSettings.coverMaxDimension)) this.pluginSettings.coverMaxDimension = 768;
-    if (!Number.isFinite(this.pluginSettings.coverWebpQuality)) this.pluginSettings.coverWebpQuality = 80;
-    if (typeof this.pluginSettings.optimizeVaultCovers !== 'boolean') this.pluginSettings.optimizeVaultCovers = true;
-    if (typeof this.pluginSettings.lazyLoadCovers !== 'boolean') this.pluginSettings.lazyLoadCovers = true;
+  async loadSettings(): Promise<void> {
+    const raw: unknown = await this.loadData();
+    this.pluginSettings = parseStoredSettings(raw);
 
     // Migrate v0.4 external covers that embedded their data directly in each
     // folder mapping into the shared external-image library introduced in v0.5.
     let migrated = false;
     for (const [folderPath, cover] of Object.entries(this.pluginSettings.customCovers)) {
-      if (cover && typeof cover === 'object' && cover.type === 'external' && cover.dataUrl) {
+      if (typeof cover !== 'string' && cover.type === 'external' && cover.dataUrl) {
         const imageId = this.storeExternalImage({
-          name: cover.name || 'External image',
-          mime: cover.mime || 'image/*',
-          originalSize: cover.size || estimateDataUrlBytes(cover.dataUrl),
+          name: cover.name ?? 'External image',
+          mime: cover.mime ?? 'image/webp',
+          originalSize: cover.size ?? estimateDataUrlBytes(cover.dataUrl),
           dataUrl: cover.dataUrl,
         });
         this.pluginSettings.customCovers[folderPath] = { type: 'external', imageId };
@@ -1160,17 +1428,17 @@ export default class FolderCoverWallPlugin extends Plugin {
     if (migrated) await this.saveSettings();
   }
 
-  async saveSettings() {
+  async saveSettings(): Promise<void> {
     await this.saveData(this.pluginSettings);
   }
 
-  cacheLimit() {
+  cacheLimit(): number {
     return 12;
   }
 
-  async withThumbnailSlot(work) {
+  async withThumbnailSlot<T>(work: () => Promise<T>): Promise<T> {
     if (this.thumbnailActive >= 2) {
-      await new Promise((resolve) => this.thumbnailQueue.push(resolve));
+      await new Promise<void>((resolve) => this.thumbnailQueue.push(() => resolve()));
     }
     this.thumbnailActive++;
     try {
@@ -1182,11 +1450,13 @@ export default class FolderCoverWallPlugin extends Plugin {
     }
   }
 
-  touchUrlCache(cache, key, entry) {
+  touchUrlCache(cache: Map<string, UrlCacheEntry>, key: string, entry: UrlCacheEntry): string {
     if (cache.has(key)) cache.delete(key);
     cache.set(key, entry);
     while (cache.size > this.cacheLimit()) {
-      const oldestKey = cache.keys().next().value;
+      const oldestResult = cache.keys().next();
+      if (oldestResult.done) break;
+      const oldestKey = oldestResult.value;
       const oldest = cache.get(oldestKey);
       if (oldest?.url) URL.revokeObjectURL(oldest.url);
       cache.delete(oldestKey);
@@ -1194,14 +1464,14 @@ export default class FolderCoverWallPlugin extends Plugin {
     return entry.url;
   }
 
-  clearUrlCache(cache) {
+  clearUrlCache(cache: Map<string, UrlCacheEntry>): void {
     for (const entry of cache.values()) {
       if (entry?.url) URL.revokeObjectURL(entry.url);
     }
     cache.clear();
   }
 
-  clearImageCaches() {
+  clearImageCaches(): void {
     this.clearUrlCache(this.vaultThumbnailCache);
     this.clearUrlCache(this.externalObjectUrlCache);
     this.thumbnailTasks.clear();
@@ -1211,13 +1481,13 @@ export default class FolderCoverWallPlugin extends Plugin {
     }
   }
 
-  revokeExternalImageUrl(imageId) {
+  revokeExternalImageUrl(imageId: string): void {
     const entry = this.externalObjectUrlCache.get(imageId);
     if (entry?.url) URL.revokeObjectURL(entry.url);
     this.externalObjectUrlCache.delete(imageId);
   }
 
-  async optimizeExternalFile(file) {
+  async optimizeExternalFile(file: File): Promise<OptimizedExternalImage> {
     const optimized = await optimizeBlobToWebp(
       file,
       this.pluginSettings.coverMaxDimension,
@@ -1231,7 +1501,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     };
   }
 
-  externalImageNeedsOptimization(image) {
+  externalImageNeedsOptimization(image: ExternalImageRecord | undefined): boolean {
     if (!image || typeof image.dataUrl !== 'string' || !image.dataUrl.startsWith('data:image/')) return false;
     if (image.optimizedVersion !== 1) return true;
     if (String(image.mime || '').toLowerCase() !== 'image/webp') return true;
@@ -1242,7 +1512,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     return false;
   }
 
-  async optimizeExternalImageRecord(imageId, force = false) {
+  async optimizeExternalImageRecord(imageId: string, force = false): Promise<ImageOptimizationResult | null> {
     const image = this.pluginSettings.externalImages?.[imageId];
     if (!image || typeof image.dataUrl !== 'string' || !image.dataUrl.startsWith('data:image/')) return null;
     if (!force && !this.externalImageNeedsOptimization(image)) return null;
@@ -1277,7 +1547,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     };
   }
 
-  async optimizeLegacyExternalImages() {
+  async optimizeLegacyExternalImages(): Promise<OptimizationSummary> {
     const entries = Object.keys(this.pluginSettings.externalImages || {});
     let optimized = 0;
     let beforeBytes = 0;
@@ -1291,7 +1561,7 @@ export default class FolderCoverWallPlugin extends Plugin {
         optimized++;
         beforeBytes += result.beforeBytes;
         afterBytes += result.afterBytes;
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       } catch (error) {
         console.error(`Folder Cover Wall: failed to optimize stored cover ${imageId}`, error);
       }
@@ -1304,7 +1574,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     return { optimized, beforeBytes, afterBytes };
   }
 
-  async optimizeAllExternalImages() {
+  async optimizeAllExternalImages(): Promise<OptimizationSummary> {
     const entries = Object.keys(this.pluginSettings.externalImages || {});
     let optimized = 0;
     let beforeBytes = 0;
@@ -1319,7 +1589,7 @@ export default class FolderCoverWallPlugin extends Plugin {
         optimized++;
         beforeBytes += result.beforeBytes;
         afterBytes += result.afterBytes;
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       } catch (error) {
         console.error(`Folder Cover Wall: failed to optimize stored cover ${imageId}`, error);
       }
@@ -1332,7 +1602,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     return { optimized, beforeBytes, afterBytes };
   }
 
-  async getExternalImageObjectUrl(imageId) {
+  async getExternalImageObjectUrl(imageId: string): Promise<string | null> {
     const cached = this.externalObjectUrlCache.get(imageId);
     if (cached) {
       this.externalObjectUrlCache.delete(imageId);
@@ -1346,11 +1616,11 @@ export default class FolderCoverWallPlugin extends Plugin {
     return this.touchUrlCache(this.externalObjectUrlCache, imageId, { url, bytes: blob.size });
   }
 
-  vaultThumbnailKey(file) {
+  vaultThumbnailKey(file: TFile): string {
     return `${file.path}|${file.stat?.mtime || 0}|${this.pluginSettings.coverMaxDimension}|${this.pluginSettings.coverWebpQuality}`;
   }
 
-  async getVaultThumbnailUrl(file) {
+  async getVaultThumbnailUrl(file: TFile): Promise<string> {
     const key = this.vaultThumbnailKey(file);
     const cached = this.vaultThumbnailCache.get(key);
     if (cached) {
@@ -1358,7 +1628,8 @@ export default class FolderCoverWallPlugin extends Plugin {
       this.vaultThumbnailCache.set(key, cached);
       return cached.url;
     }
-    if (this.thumbnailTasks.has(key)) return this.thumbnailTasks.get(key);
+    const existingTask = this.thumbnailTasks.get(key);
+    if (existingTask) return existingTask;
 
     const task = this.withThumbnailSlot(async () => {
       const binary = await this.app.vault.readBinary(file);
@@ -1380,7 +1651,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     }
   }
 
-  async resolveCoverDisplayUrl(source) {
+  async resolveCoverDisplayUrl(source: CoverSource | null): Promise<string | null> {
     if (!source) return null;
     if (source.kind === 'external' && source.imageId) {
       return this.getExternalImageObjectUrl(source.imageId);
@@ -1398,11 +1669,11 @@ export default class FolderCoverWallPlugin extends Plugin {
     return null;
   }
 
-  externalImageStoredBytes(image) {
+  externalImageStoredBytes(image: ExternalImageRecord): number {
     return Number(image?.storedSize) || estimateDataUrlBytes(image?.dataUrl || '');
   }
 
-  storeExternalImage(image) {
+  storeExternalImage(image: ImageStoreInput): string {
     const baseId = `img-${hashText(image.dataUrl || `${image.name || ''}:${Date.now()}`)}`;
     let imageId = baseId;
     let suffix = 2;
@@ -1430,7 +1701,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     return imageId;
   }
 
-  getExternalImageUsage(imageId) {
+  getExternalImageUsage(imageId: string): string[] {
     const usages = [];
     for (const [folderPath, cover] of Object.entries(this.pluginSettings.customCovers || {})) {
       if (cover && typeof cover === 'object' && cover.type === 'external' && cover.imageId === imageId) {
@@ -1440,7 +1711,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     return usages.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
   }
 
-  cleanupUnusedExternalImages() {
+  cleanupUnusedExternalImages(): number {
     const used = new Set();
     for (const cover of Object.values(this.pluginSettings.customCovers || {})) {
       if (cover && typeof cover === 'object' && cover.type === 'external' && cover.imageId) used.add(cover.imageId);
@@ -1456,7 +1727,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     return removed;
   }
 
-  getOrphanedCoverMappings() {
+  getOrphanedCoverMappings(): string[] {
     const orphaned = [];
     for (const folderPath of Object.keys(this.pluginSettings.customCovers || {})) {
       const target = this.app.vault.getAbstractFileByPath(normalizePath(folderPath));
@@ -1465,14 +1736,14 @@ export default class FolderCoverWallPlugin extends Plugin {
     return orphaned;
   }
 
-  cleanupOrphanedCoverMappings() {
+  cleanupOrphanedCoverMappings(): CleanupSummary {
     const orphaned = this.getOrphanedCoverMappings();
     for (const folderPath of orphaned) delete this.pluginSettings.customCovers[folderPath];
     const imagesRemoved = this.cleanupUnusedExternalImages();
     return { mappingsRemoved: orphaned.length, imagesRemoved };
   }
 
-  removeExternalImage(imageId, clearMappings = true) {
+  removeExternalImage(imageId: string, clearMappings = true): void {
     if (clearMappings) {
       for (const [folderPath, cover] of Object.entries(this.pluginSettings.customCovers || {})) {
         if (cover && typeof cover === 'object' && cover.type === 'external' && cover.imageId === imageId) {
@@ -1484,7 +1755,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     delete this.pluginSettings.externalImages[imageId];
   }
 
-  removeAllExternalImages() {
+  removeAllExternalImages(): void {
     for (const [folderPath, cover] of Object.entries(this.pluginSettings.customCovers || {})) {
       if (cover && typeof cover === 'object' && cover.type === 'external') {
         delete this.pluginSettings.customCovers[folderPath];
@@ -1494,7 +1765,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     this.pluginSettings.externalImages = {};
   }
 
-  async handleVaultRename(file, oldPath) {
+  async handleVaultRename(file: TAbstractFile, oldPath: string): Promise<void> {
     this.clearUrlCache(this.vaultThumbnailCache);
     const newPath = file.path;
     const includeDescendants = file instanceof TFolder;
@@ -1502,7 +1773,7 @@ export default class FolderCoverWallPlugin extends Plugin {
 
     // Folder cover mappings are keyed by folder path. When a folder is renamed,
     // migrate its own mapping and every descendant mapping to the new prefix.
-    const migratedCovers = {};
+    const migratedCovers: Record<string, CustomCover> = {};
     for (const [folderPath, coverValue] of Object.entries(this.pluginSettings.customCovers || {})) {
       const migratedFolderPath = includeDescendants
         ? rewritePath(folderPath, oldPath, newPath, true)
@@ -1530,7 +1801,6 @@ export default class FolderCoverWallPlugin extends Plugin {
 
     const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL);
     for (const leaf of leaves) {
-      try { if (leaf.loadIfDeferred) await leaf.loadIfDeferred(); } catch (_) {}
       const view = leaf.view;
       if (view instanceof FolderCoverWallView) {
         const migratedCurrent = rewritePath(view.currentPath, oldPath, newPath, includeDescendants);
@@ -1542,7 +1812,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     await this.refreshOpenViews();
   }
 
-  async handleVaultDelete(file) {
+  async handleVaultDelete(file: TAbstractFile): Promise<void> {
     this.clearUrlCache(this.vaultThumbnailCache);
     const deletedPath = file.path;
     const includeDescendants = file instanceof TFolder;
@@ -1580,7 +1850,7 @@ export default class FolderCoverWallPlugin extends Plugin {
     await this.refreshOpenViews();
   }
 
-  removeDuplicateViews() {
+  removeDuplicateViews(): number {
     const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL);
     if (leaves.length <= 1) return 0;
 
@@ -1594,13 +1864,13 @@ export default class FolderCoverWallPlugin extends Plugin {
     return leaves.length - 1;
   }
 
-  async activateView(replaceCurrentLeftLeaf = false) {
+  async activateView(replaceCurrentLeftLeaf = false): Promise<void> {
     this.removeDuplicateViews();
 
     // Always reuse an already restored Folder Cover Wall leaf first. This is
     // important on application startup: replacing another left-sidebar leaf
     // before checking the restored layout is what caused duplicate tab icons.
-    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL)[0] || null;
+    let leaf: WorkspaceLeaf | null = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL)[0] ?? null;
 
     if (!leaf && replaceCurrentLeftLeaf) leaf = this.app.workspace.getLeftLeaf(false);
     if (!leaf) leaf = this.app.workspace.getLeftLeaf(false) || this.app.workspace.getLeftLeaf(true);
@@ -1616,12 +1886,9 @@ export default class FolderCoverWallPlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
   }
 
-  async refreshOpenViews() {
+  async refreshOpenViews(): Promise<void> {
     const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_COVER_WALL);
     for (const leaf of leaves) {
-      try {
-        if (leaf.loadIfDeferred) await leaf.loadIfDeferred();
-      } catch (_) {}
       const view = leaf.view;
       if (view instanceof FolderCoverWallView) await view.refresh();
     }

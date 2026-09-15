@@ -6,20 +6,20 @@ Before the first public release:
 
 1. Create the public repository `https://github.com/Arebrodo/folder-cover-wall`.
 2. Push this project to that repository.
-3. Run `npm install` and `npm run build` once locally if possible.
+3. Run `npm install`, `npm run lint`, and `npm run build` once locally if possible.
 4. Run `npm run check-release`.
 5. Confirm the author metadata is still `Arebrodo` and the repository URL has not changed.
 
 ## Create a release manually
 
 1. Make sure `manifest.json`, `package.json`, and `versions.json` all contain the intended version.
-2. Run `npm run build`.
+2. Run `npm run lint` and `npm run build`.
 3. Commit and push the changes.
 4. Create a Git tag whose name is exactly the version number, for example:
 
 ```bash
-git tag 0.6.0
-git push origin 0.6.0
+git tag 0.7.0
+git push origin 0.7.0
 ```
 
 The included GitHub Actions release workflow will build the plugin, verify the tag, and create a GitHub Release containing:

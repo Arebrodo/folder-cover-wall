@@ -13,6 +13,7 @@ Before submitting Folder Cover Wall to the Obsidian Community directory:
 - [ ] Check behavior with long folder names.
 - [ ] Check behavior in a narrow sidebar.
 - [ ] Run `npm install`.
+- [ ] Run `npm run lint`.
 - [ ] Run `npm run build`.
 - [ ] Run `npm run check-release`.
 - [ ] Ensure `manifest.json`, `package.json`, and `versions.json` agree on the version.

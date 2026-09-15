@@ -114,6 +114,15 @@ Folder Cover Wall 会按以下顺序选择封面：
 
 同一张外部图片即使被多个文件夹使用，也只会保存一份。
 
+## 安全与隐私
+
+- Folder Cover Wall 不会为了封面图片发起网络请求。
+- 只有在用户主动选择外部图片后，插件才会读取该文件。
+- 外部导入仅允许 JPEG、PNG 和 WebP，并拒绝大于 32 MB 的源文件。
+- 插件在解码前会校验保存的图片 data URL。
+- 只有在用户打开 Vault 图片选择器时，插件才会枚举 Vault 文件，用于列出可选的本地图片。
+- GitHub CI 会在构建和发布前运行 Obsidian 官方 `eslint-plugin-obsidianmd` 推荐规则。
+
 ## 外部图片与隐私
 
 外部图片只会在本地读取。插件会将优化后的封面副本以嵌入式图片数据形式保存到自己的 `data.json` 中。
@@ -191,6 +200,12 @@ styles.css
 
 ```bash
 npm install
+```
+
+运行 Obsidian 官方 ESLint 规则：
+
+```bash
+npm run lint
 ```
 
 启动开发构建：

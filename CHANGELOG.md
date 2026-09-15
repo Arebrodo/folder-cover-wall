@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+
+### Code quality and security hardening
+
+- Removed `@ts-nocheck` and added explicit TypeScript types throughout the plugin.
+- Replaced unsafe loosely typed settings/data parsing with validated parsing of persisted plugin data.
+- Added strict validation for external cover inputs: JPEG, PNG, and WebP only, with a 32 MB source-size limit.
+- Restricted embedded image data to validated JPEG/PNG/WebP data URLs.
+- Removed direct DOM element construction patterns where Obsidian helpers are available.
+- Removed direct HTML heading creation from settings and management UIs.
+- Removed use of deferred-view APIs so the declared minimum app version remains conservative.
+- Added the official `eslint-plugin-obsidianmd` recommended rules and a `npm run lint` command.
+- Added linting to GitHub CI and release workflows so Community Directory issues can be caught before publishing.
+- Wrapped asynchronous DOM handlers so event listeners do not return promises.
+- Preserved the low-memory cover pipeline introduced in 0.6.x.
+
 ## 0.6.2
 
 - Fix Community Directory automated review error in the settings UI.

@@ -1,7 +1,7 @@
 {
   "id": "folder-cover-wall",
   "name": "Folder Cover Wall",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "minAppVersion": "1.8.0",
   "description": "Browse folders as a visual cover wall in the sidebar, with custom vault or external-image covers.",
   "author": "Arebrodo",

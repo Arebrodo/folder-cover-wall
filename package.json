@@ -1,14 +1,15 @@
 {
   "name": "folder-cover-wall",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Browse folders as a visual cover wall in the sidebar.",
   "main": "main.js",
   "type": "module",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "build": "tsc --noEmit && node esbuild.config.mjs production",
     "check-release": "node scripts/preflight.mjs",
-    "version": "node version-bump.mjs && git add manifest.json versions.json"
+    "version": "node version-bump.mjs && git add manifest.json versions.json",
+    "lint": "eslint \"src/**/*.ts\""
   },
   "keywords": [
     "obsidian",
@@ -32,6 +33,8 @@
     "esbuild": "^0.25.0",
     "obsidian": "latest",
     "tslib": "^2.8.1",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "eslint": "^9.30.1",
+    "eslint-plugin-obsidianmd": "^0.4.2"
   }
 }

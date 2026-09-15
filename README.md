@@ -114,6 +114,15 @@ The storage manager lets you:
 
 The same external image is stored only once, even when it is used by multiple folders.
 
+## Security and privacy
+
+- Folder Cover Wall makes no network requests for cover images.
+- External images are only read after the user explicitly selects them.
+- External imports are restricted to JPEG, PNG, and WebP and source files larger than 32 MB are rejected.
+- Stored data URLs are validated before decoding.
+- The vault image picker enumerates vault files only when the user opens that picker, so it can list available local images.
+- GitHub CI runs the official `eslint-plugin-obsidianmd` recommended checks before builds and releases.
+
 ## External images and privacy
 
 External images are read locally. The optimized cover copy is stored as embedded image data in the plugin's `data.json`.
@@ -191,6 +200,12 @@ Install dependencies:
 
 ```bash
 npm install
+```
+
+Run the official Obsidian lint rules:
+
+```bash
+npm run lint
 ```
 
 Start a development build:
